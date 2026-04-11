@@ -21,6 +21,55 @@
 
 ---
 
+## Skill 0 — `check_bot_eligibility`
+
+Before starting Bot Mode, **always** check if the wallet has played at least 5 matches.
+If `botUnlocked` is `false`, do NOT call `StartBotMode` — inform the user instead.
+
+### Endpoint
+
+```
+GET http://localhost:3000/api/player/status?wallet=<WALLET_PUBKEY>
+```
+
+### Success Response `200`
+
+```json
+{ "wallet": "...", "matches": 3, "botUnlocked": false }
+```
+
+| Field | Description |
+|-------------|-----------------------------------------------|
+| `matches` | Number of completed matches for this wallet |
+| `botUnlocked` | `true` when `matches >= 5` — agent can play |
+
+### Record a Completed Match
+
+When a match finishes (Unity calls this automatically, or you can call it for testing):
+
+```
+POST http://localhost:3000/api/player/record
+Content-Type: application/json
+
+{ "wallet": "<WALLET_PUBKEY>", "result": "win" }
+```
+
+Returns the updated `{ wallet, matches, botUnlocked }`.
+
+### Example Curl
+
+```bash
+# Check eligibility
+curl "http://localhost:3000/api/player/status?wallet=YOUR_WALLET"
+
+# Record a match (for testing)
+curl -X POST http://localhost:3000/api/player/record \
+  -H "Content-Type: application/json" \
+  -d '{"wallet":"YOUR_WALLET","result":"win"}'
+```
+
+---
+
 ## Skill 1 — `control_game`
 
 Send a command to the StakeStack Unity WebGL game. Commands are delivered via an
@@ -186,7 +235,32 @@ Then attach the returned `tools` array to your chat completions request. The
 agent will call `control_game` or `fetch_paid_data` as tool calls, and you
 execute the HTTP requests.
 
-### Option C — Run the standalone example script
+### Option C — Autonomous Bot Loop (recommended)
+
+Once the user has connected their wallet and played 5 matches, run the agent in
+**bot-loop mode**. The agent will:
+1. Check eligibility via `check_bot_eligibility`
+2. If unlocked → call `StartBotMode` to begin a bot match
+3. Wait (configurable delay) → call `ExitToMainMenu`
+4. Repeat for N rounds
+
+```bash
+cd d:\Code\Nextjs\solana_mpp
+
+# Check if a wallet is eligible
+npx tsx skills-agent-example.ts --wallet YOUR_WALLET_PUBKEY --check
+
+# Start autonomous bot loop (plays until you Ctrl+C)
+npx tsx skills-agent-example.ts --wallet YOUR_WALLET_PUBKEY --bot-loop
+
+# Play exactly 3 bot matches then stop
+npx tsx skills-agent-example.ts --wallet YOUR_WALLET_PUBKEY --bot-loop --rounds 3
+```
+
+The agent reads the skills file, confirms eligibility, then executes the
+game commands on its own — no human needed.
+
+### Option D — Run the standalone example script
 
 ```bash
 cd d:\Code\Nextjs\solana_mpp

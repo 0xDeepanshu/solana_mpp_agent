@@ -31,6 +31,27 @@ const TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'check_bot_eligibility',
+            description:
+                'Check if a wallet has played at least 5 matches, which is required to unlock Bot Mode. ' +
+                'ALWAYS call this before calling control_game with StartBotMode. ' +
+                'If botUnlocked is false, tell the user how many matches they still need.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    wallet: {
+                        type: 'string',
+                        description: 'The Solana wallet public key (base58) to check eligibility for.',
+                    },
+                },
+                required: ['wallet'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'control_game',
             description:
                 'Send a command to the StakeStack Unity WebGL game. ' +
@@ -81,15 +102,21 @@ const TOOLS = [
 ]
 
 /** Plain-text system prompt for agents that don't support structured tool-calling */
-const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack game. You have access to two HTTP tools:
+const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack game. You have access to three HTTP tools:
+
+TOOL 0: check_bot_eligibility  ← ALWAYS call this before StartBotMode
+  Endpoint: GET ${BASE_URL}/api/player/status?wallet=<PUBKEY>
+  Returns: { wallet, matches, botUnlocked }
+  Bot Mode requires matches >= 5. If botUnlocked is false, tell the user how many more matches they need.
 
 TOOL 1: control_game
   Endpoint: POST ${BASE_URL}/api/game
   Body: { "action": "StartBotMode" | "StartPracticeMode" | "ExitToMainMenu" | "GetPracticeStatus" }
   Use when the user wants to play the game or change game modes.
+  IMPORTANT: Only call StartBotMode after check_bot_eligibility confirms botUnlocked === true.
   
   Natural language → action mapping:
-  - "start a bot match", "play vs bot", "fight the AI" → StartBotMode
+  - "start a bot match", "play vs bot", "fight the AI" → StartBotMode  (only if eligible)
   - "practice mode", "solo mode", "train"             → StartPracticeMode
   - "go to main menu", "exit", "go back", "home"      → ExitToMainMenu
   - "get my stats", "how am I doing", "show score"    → GetPracticeStatus
