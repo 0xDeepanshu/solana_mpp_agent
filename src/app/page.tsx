@@ -62,7 +62,7 @@ export default function Home() {
 
       {data && <p style={{ marginTop: '1rem' }}>🎉 {data}</p>}
       {error && <p style={{ marginTop: '1rem' }}>❌ {error}</p>}
-
+      button
     </main>
   )
 }

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Unity Web Player | StakeStack</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+      *, *::before, *::after { box-sizing: border-box; }
+
+      /* ── Agent Control Overlay ───────────────────────────── */
+      #agent-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        background: rgba(8, 12, 20, 0.92);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(139, 92, 246, 0.25);
+        font-family: 'Inter', sans-serif;
+        font-size: 12px;
+        color: #e2e8f0;
+      }
+
+      .agent-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        background: rgba(139, 92, 246, 0.15);
+        border: 1px solid rgba(139, 92, 246, 0.35);
+        border-radius: 999px;
+        font-weight: 600;
+        color: #a78bfa;
+        font-size: 11px;
+      }
+
+      .agent-badge-dot {
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: #7c3aed;
+        animation: pulseDot 2s infinite ease-in-out;
+      }
+      .agent-badge-dot.connected { background: #22c55e; }
+      .agent-badge-dot.error     { background: #ef4444; animation: none; }
+
+      @keyframes pulseDot {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50%       { opacity: 0.5; transform: scale(0.7); }
+      }
+
+      .sse-status {
+        color: #64748b;
+        font-size: 11px;
+        font-family: 'JetBrains Mono', monospace;
+      }
+
+      .manual-btns {
+        display: flex; gap: 6px; margin-left: auto;
+      }
+      .manual-btns button {
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(139, 92, 246, 0.3);
+        background: rgba(139, 92, 246, 0.12);
+        color: #a78bfa;
+        font-size: 11px;
+        font-family: 'Inter', sans-serif;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .manual-btns button:hover {
+        background: rgba(139, 92, 246, 0.25);
+        border-color: rgba(139, 92, 246, 0.6);
+        color: #c4b5fd;
+      }
+
+      /* ── Command Log ─────────────────────────────────────── */
+      #cmd-log-toggle {
+        padding: 3px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.04);
+        color: #64748b;
+        font-family: 'Inter', sans-serif;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.15s;
+        margin-left: 8px;
+      }
+      #cmd-log-toggle:hover { color: #94a3b8; border-color: rgba(255,255,255,0.15); }
+
+      #cmd-log {
+        position: fixed;
+        bottom: 0; left: 0;
+        width: 320px;
+        max-height: 220px;
+        background: rgba(8, 12, 20, 0.95);
+        border-top: 1px solid rgba(139, 92, 246, 0.2);
+        border-right: 1px solid rgba(139, 92, 246, 0.2);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        color: #94a3b8;
+        overflow-y: auto;
+        z-index: 99;
+        display: none;
+        flex-direction: column;
+        padding: 8px;
+        gap: 3px;
+      }
+      #cmd-log.open { display: flex; }
+      .log-entry {
+        display: flex; gap: 8px; align-items: baseline;
+      }
+      .log-ts { color: #334155; font-size: 10px; flex-shrink: 0; }
+      .log-action { color: #a78bfa; font-weight: 500; }
+      .log-ok { color: #22c55e; }
+      .log-err { color: #ef4444; }
+
+      /* Push canvas below the overlay bar */
+      #unity-container { padding-top: 42px; }
+    </style>
+  </head>
+  <body>
+
+    <!-- ── Agent Control Overlay ─────────────────────────── -->
+    <div id="agent-overlay">
+      <div class="agent-badge">
+        <div class="agent-badge-dot" id="sse-dot"></div>
+        🤖 Agent Mode
+      </div>
+      <span class="sse-status" id="sse-status-text">Connecting to agent…</span>
+
+      <div class="manual-btns">
+        <button onclick="sendCmd('StartBotMode')"      title="Start Bot Match">▶ Bot</button>
+        <button onclick="sendCmd('StartPracticeMode')" title="Start Practice">🎯 Practice</button>
+        <button onclick="sendCmd('ExitToMainMenu')"    title="Exit to Menu">🏠 Menu</button>
+        <button onclick="sendCmd('GetPracticeStatus')" title="Get Stats">📊 Stats</button>
+      </div>
+
+      <button id="cmd-log-toggle" onclick="toggleLog()">📋 Log</button>
+    </div>
+
+    <!-- ── Command Log ───────────────────────────────────── -->
+    <div id="cmd-log"></div>
+
+    <!-- ── Unity Container ──────────────────────────────── -->
+    <div id="unity-container" class="unity-desktop">
+      <canvas id="unity-canvas" width=500 height=900 tabindex="-1"></canvas>
+      <div id="unity-loading-bar">
+        <div id="unity-logo"></div>
+        <div id="unity-progress-bar-empty">
+          <div id="unity-progress-bar-full"></div>
+        </div>
+      </div>
+      <div id="unity-warning"> </div>
+      <div id="unity-footer">
+        <div id="unity-logo-title-footer"></div>
+        <div id="unity-fullscreen-button"></div>
+        <div id="unity-build-title">StakeStack</div>
+      </div>
+    </div>
+
+    <script>
+      var canvas = document.querySelector("#unity-canvas");
+      var myUnityInstance = null;
+
+      // ── Helper: manually trigger a command from the overlay buttons ────────
+      function sendCmd(action) {
+        fetch('/api/game', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action })
+        }).catch(console.error);
+      }
+
+      // ── SSE Client ────────────────────────────────────────────────────────
+      var sseDot        = document.getElementById('sse-dot');
+      var sseStatusText = document.getElementById('sse-status-text');
+      var cmdLog        = document.getElementById('cmd-log');
+      var logOpen       = false;
+
+      function toggleLog() {
+        logOpen = !logOpen;
+        cmdLog.classList.toggle('open', logOpen);
+        document.getElementById('cmd-log-toggle').textContent = logOpen ? '✕ Log' : '📋 Log';
+      }
+
+      function appendLog(action, ok, msg) {
+        var ts  = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        var div = document.createElement('div');
+        div.className = 'log-entry';
+        div.innerHTML =
+          '<span class="log-ts">' + ts + '</span>' +
+          '<span class="log-action">' + action + '</span>' +
+          '<span class="' + (ok ? 'log-ok' : 'log-err') + '">' + (msg || (ok ? '✓' : '✗')) + '</span>';
+        cmdLog.appendChild(div);
+        cmdLog.scrollTop = cmdLog.scrollHeight;
+        // Auto-open the log on first command
+        if (!logOpen) toggleLog();
+      }
+
+      function connectSSE() {
+        var es = new EventSource('/api/game');
+
+        es.onopen = function() {
+          sseDot.className = 'agent-badge-dot connected';
+          sseStatusText.textContent = 'Agent connected — waiting for commands';
+        };
+
+        es.onmessage = function(event) {
+          try {
+            var cmd = JSON.parse(event.data);
+            if (!cmd.action) return; // heartbeat-style data with no action
+            console.log('[Unity SSE] Command received:', cmd.action);
+            executeCommand(cmd.action);
+          } catch(e) { /* ignore parse errors on heartbeat lines */ }
+        };
+
+        es.onerror = function() {
+          sseDot.className = 'agent-badge-dot error';
+          sseStatusText.textContent = 'Connection lost — reconnecting…';
+          es.close();
+          // Reconnect after 3 s
+          setTimeout(connectSSE, 3000);
+        };
+      }
+
+      function executeCommand(action) {
+        if (myUnityInstance) {
+          try {
+            myUnityInstance.SendMessage('ApiManager', action);
+            appendLog(action, true);
+            sseStatusText.textContent = 'Last cmd: ' + action;
+          } catch(e) {
+            appendLog(action, false, e.message);
+          }
+        } else {
+          // Queue execution until Unity is ready
+          appendLog(action, false, 'Unity not ready yet — queued');
+          var check = setInterval(function() {
+            if (myUnityInstance) {
+              clearInterval(check);
+              try {
+                myUnityInstance.SendMessage('ApiManager', action);
+                appendLog(action, true, '(delayed)');
+              } catch(e2) {
+                appendLog(action, false, e2.message);
+              }
+            }
+          }, 500);
+          // Give up after 30 s
+          setTimeout(function() { clearInterval(check); }, 30000);
+        }
+      }
+
+      // Start SSE immediately
+      connectSSE();
+
+      // ── Unity banner helper ───────────────────────────────────────────────
+      function unityShowBanner(msg, type) {
+        var warningBanner = document.querySelector("#unity-warning");
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px;';
+        else {
+          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
+          setTimeout(function() {
+            warningBanner.removeChild(div);
+            updateBannerVisibility();
+          }, 5000);
+        }
+        updateBannerVisibility();
+      }
+
+      // ── Unity loader ─────────────────────────────────────────────────────
+      var buildUrl    = "Build";
+      var loaderUrl   = buildUrl + "/X.loader.js";
+      var config = {
+        arguments:          [],
+        dataUrl:            buildUrl + "/X.data",
+        frameworkUrl:       buildUrl + "/X.framework.js",
+        codeUrl:            buildUrl + "/X.wasm",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName:        "RuptureLabs",
+        productName:        "StakeStack",
+        productVersion:     "0.1",
+        showBanner:         unityShowBanner,
+      };
+
+      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+        document.getElementsByTagName('head')[0].appendChild(meta);
+        document.querySelector("#unity-container").className = "unity-mobile";
+        canvas.className = "unity-mobile";
+      } else {
+        canvas.style.width  = "500px";
+        canvas.style.height = "900px";
+      }
+
+      document.querySelector("#unity-loading-bar").style.display = "block";
+
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      script.onload = () => {
+        createUnityInstance(canvas, config, (progress) => {
+          document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
+        }).then((unityInstance) => {
+          myUnityInstance         = unityInstance;
+          window.myUnityInstance  = unityInstance;
+          document.querySelector("#unity-loading-bar").style.display = "none";
+          document.querySelector("#unity-fullscreen-button").onclick = () => {
+            unityInstance.SetFullscreen(1);
+          };
+          // Update SSE status now that Unity is ready
+          sseDot.className        = 'agent-badge-dot connected';
+          sseStatusText.textContent = 'Unity ready — agent can now control the game';
+          appendLog('Unity', true, 'Instance ready');
+        }).catch((message) => {
+          alert(message);
+        });
+      };
+
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>
