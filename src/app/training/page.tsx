@@ -5,104 +5,44 @@ import { useAccount } from '@solana/connector'
 import { ConnectButtonBaseUI } from '@/components/WalletConnect'
 
 interface TrainingProfile {
-    wallet: string
-    totalMatches: number
-    overallAccuracy: number
-    overallAvgResponseTimeMs: number
-    winRate: number
-    avgScore: number
-    bestScore: number
-    avgMaxLevel: number
-    skillTier: string
-    stackingStyle: string
-    speedTier: string
-    preferredColumns: number[]
-    weakColumns: number[]
-    levelPerformance: { level: number; accuracy: number; avgResponseTimeMs: number; sampleSize: number }[]
-    averageFailureLevel: number
-    consistencyScore: number
-    improvementTrend: number
-    strategySummary: string
-    computedAt: number
+    wallet: string; totalMatches: number; overallAccuracy: number
+    overallAvgResponseTimeMs: number; winRate: number; avgScore: number
+    bestScore: number; avgMaxLevel: number; skillTier: string
+    stackingStyle: string; speedTier: string; preferredColumns: number[]
+    weakColumns: number[]; levelPerformance: { level: number; accuracy: number; avgResponseTimeMs: number; sampleSize: number }[]
+    averageFailureLevel: number; consistencyScore: number; improvementTrend: number
+    strategySummary: string; computedAt: number
 }
 
 interface MatchRecord {
-    matchId: string
-    startedAt: number
-    endedAt: number
-    durationSec: number
-    finalScore: number
-    maxLevel: number
-    totalMoves: number
-    correctMoves: number
-    accuracy: number
-    avgResponseTimeMs: number
-    result: string
+    matchId: string; startedAt: number; endedAt: number; durationSec: number
+    finalScore: number; maxLevel: number; totalMoves: number; correctMoves: number
+    accuracy: number; avgResponseTimeMs: number; result: string
 }
 
 interface TrainingStats {
-    wallet: string
-    totalMatches: number
-    aggregates: {
-        wins: number
-        losses: number
-        winRate: number
-        totalScore: number
-        bestScore: number
-        avgScore: number
-        avgAccuracy: number
-        avgResponseTimeMs: number
-        totalPlayTimeSec: number
-        totalPlayTimeFormatted: string
-    }
+    wallet: string; totalMatches: number
+    aggregates: { wins: number; losses: number; winRate: number; totalScore: number; bestScore: number; avgScore: number; avgAccuracy: number; avgResponseTimeMs: number; totalPlayTimeSec: number; totalPlayTimeFormatted: string }
     recentAccuracy: { matchId: string; accuracy: number; score: number; date: number }[]
     matches: MatchRecord[]
 }
 
 interface PlayerStatus {
-    wallet: string
-    matches: number
-    botUnlocked: boolean
-    training: {
-        matchesPlayed: number
-        matchesRequired: number
-        ready: boolean
-        progressPercent: number
-        hasProfile: boolean
-        skillTier: string | null
-        accuracy: number | null
-    }
+    wallet: string; matches: number; botUnlocked: boolean
+    training: { matchesPlayed: number; matchesRequired: number; ready: boolean; progressPercent: number; hasProfile: boolean; skillTier: string | null; accuracy: number | null }
 }
 
-const TIER_COLORS: Record<string, string> = {
-    beginner: '#94a3b8',
-    intermediate: '#3b82f6',
-    advanced: '#8b5cf6',
-    expert: '#f59e0b',
-    master: '#ef4444',
-}
-
-const TIER_LABELS: Record<string, string> = {
-    beginner: '🌱 Beginner',
-    intermediate: '⚔️ Intermediate',
-    advanced: '🔥 Advanced',
-    expert: '💎 Expert',
-    master: '👑 Master',
-}
-
-const SPEED_LABELS: Record<string, string> = {
-    cautious: '🐢 Cautious',
-    steady: '🚶 Steady',
-    quick: '🏃 Quick',
-    blazing: '⚡ Blazing',
+const TIER_CONFIG: Record<string, { color: string; bg: string; border: string; label: string }> = {
+    beginner: { color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.15)', label: 'Beginner' },
+    intermediate: { color: '#3b82f6', bg: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.15)', label: 'Intermediate' },
+    advanced: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.08)', border: 'rgba(139,92,246,0.15)', label: 'Advanced' },
+    expert: { color: '#f59e0b', bg: 'rgba(245,158,11,0.08)', border: 'rgba(245,158,11,0.15)', label: 'Expert' },
+    master: { color: '#ef4444', bg: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.15)', label: 'Master' },
 }
 
 const STYLE_LABELS: Record<string, string> = {
-    'center-first': '🎯 Center-First',
-    'left-to-right': '⬅️ Left-to-Right',
-    'right-to-left': '➡️ Right-to-Left',
-    spread: '🔀 Spread',
-    adaptive: '🧩 Adaptive',
+    'center-first': 'Center-First', 'left-to-right': 'Left→Right',
+    'right-to-left': 'Right→Left', spread: 'Spread', adaptive: 'Adaptive',
 }
 
 export default function TrainingPage() {
@@ -111,548 +51,627 @@ export default function TrainingPage() {
     const [profile, setProfile] = useState<TrainingProfile | null>(null)
     const [stats, setStats] = useState<TrainingStats | null>(null)
     const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
     const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'strategy'>('overview')
 
     const fetchData = useCallback(async () => {
         if (!address) return
         setLoading(true)
-        setError(null)
-
         try {
-            const [statusRes, profileRes, statsRes] = await Promise.all([
-                fetch(`/api/player/status?wallet=${address}`),
-                fetch(`/api/training/profile?wallet=${address}`),
-                fetch(`/api/training/stats?wallet=${address}&limit=20`),
+            const [s, p, st] = await Promise.all([
+                fetch(`/api/player/status?wallet=${address}`).then(r => r.json()),
+                fetch(`/api/training/profile?wallet=${address}`).then(r => r.json()),
+                fetch(`/api/training/stats?wallet=${address}&limit=20`).then(r => r.json()),
             ])
-
-            if (statusRes.ok) setStatus(await statusRes.json())
-            if (profileRes.ok) {
-                const pData = await profileRes.json()
-                setProfile(pData.profile)
-            }
-            if (statsRes.ok) setStats(await statsRes.json())
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load training data')
-        } finally {
-            setLoading(false)
-        }
+            if (s.training) setStatus(s)
+            if (p.profile) setProfile(p.profile)
+            if (st.matches) setStats(st)
+        } catch {} finally { setLoading(false) }
     }, [address])
 
-    useEffect(() => {
-        fetchData()
-    }, [fetchData])
+    useEffect(() => { fetchData() }, [fetchData])
 
     if (!address) {
         return (
-            <div style={styles.container}>
-                <div style={styles.connectPrompt}>
-                    <div style={styles.connectIcon}>🎮</div>
-                    <h1 style={styles.connectTitle}>Agent Training Center</h1>
-                    <p style={styles.connectDesc}>
-                        Connect your wallet to view your training profile and agent stats.
-                    </p>
+            <div style={s.page}>
+                <div style={s.connectPrompt}>
+                    <div style={s.connectIcon}>
+                        <svg width="48" height="48" viewBox="0 0 28 28" fill="none">
+                            <rect x="2" y="16" width="8" height="10" rx="2" fill="#7c3aed" opacity="0.4" />
+                            <rect x="10" y="10" width="8" height="16" rx="2" fill="#8b5cf6" opacity="0.6" />
+                            <rect x="18" y="4" width="8" height="22" rx="2" fill="#a78bfa" />
+                        </svg>
+                    </div>
+                    <h1 style={s.connectTitle}>Training Center</h1>
+                    <p style={s.connectDesc}>Connect your wallet to view your training profile and agent stats.</p>
                     <ConnectButtonBaseUI />
                 </div>
+                <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');`}</style>
             </div>
         )
     }
 
+    const tier = profile ? TIER_CONFIG[profile.skillTier] || TIER_CONFIG.beginner : null
+
     return (
-        <div style={styles.container}>
+        <div style={s.page}>
             {/* Header */}
-            <div style={styles.header}>
-                <div>
-                    <h1 style={styles.title}>🎯 Training Center</h1>
-                    <p style={styles.subtitle}>
-                        Wallet: {address.slice(0, 6)}...{address.slice(-4)}
-                    </p>
-                </div>
-                <div style={styles.headerActions}>
-                    <button onClick={fetchData} style={styles.refreshBtn} disabled={loading}>
-                        {loading ? '⟳' : '↻'} Refresh
-                    </button>
-                    <a href="/agent" style={styles.agentLink}>Go to Agent →</a>
-                </div>
-            </div>
-
-            {error && <div style={styles.error}>{error}</div>}
-
-            {/* Training Progress Bar */}
-            {status && (
-                <div style={styles.progressSection}>
-                    <div style={styles.progressHeader}>
-                        <span style={styles.progressLabel}>Training Progress</span>
-                        <span style={styles.progressValue}>
-                            {status.training.matchesPlayed}/{status.training.matchesRequired} games
+            <nav style={s.nav}>
+                <div style={s.navInner}>
+                    <div style={s.navLeft}>
+                        <a href="/" style={s.logoLink}>
+                            <div style={s.logoIcon}>
+                                <svg width="20" height="20" viewBox="0 0 28 28" fill="none">
+                                    <rect x="2" y="16" width="8" height="10" rx="2" fill="#7c3aed" opacity="0.5" />
+                                    <rect x="10" y="10" width="8" height="16" rx="2" fill="#8b5cf6" opacity="0.7" />
+                                    <rect x="18" y="4" width="8" height="22" rx="2" fill="#a78bfa" />
+                                </svg>
+                            </div>
+                        </a>
+                        <div style={s.navDivider} />
+                        <span style={s.pageTitle}>Training</span>
+                    </div>
+                    <div style={s.navRight}>
+                        <span style={s.walletBadge}>
+                            <span style={s.walletDot} />
+                            {address.slice(0, 4)}...{address.slice(-4)}
                         </span>
-                    </div>
-                    <div style={styles.progressBar}>
-                        <div
-                            style={{
-                                ...styles.progressFill,
-                                width: `${status.training.progressPercent}%`,
-                                background: status.training.ready
-                                    ? 'linear-gradient(90deg, #22c55e, #16a34a)'
-                                    : 'linear-gradient(90deg, #8b5cf6, #6d28d9)',
-                            }}
-                        />
-                    </div>
-                    <div style={styles.progressStatus}>
-                        {status.training.ready ? (
-                            <span style={styles.readyBadge}>✅ Agent is trained and ready!</span>
-                        ) : (
-                            <span style={styles.pendingBadge}>
-                                🔄 {status.training.matchesRequired - status.training.matchesPlayed} more games to train your agent
-                            </span>
-                        )}
+                        <button style={s.refreshBtn} onClick={fetchData} disabled={loading}>
+                            {loading ? '...' : '↻'}
+                        </button>
+                        <a href="/agent" style={s.agentLink}>Agent →</a>
                     </div>
                 </div>
-            )}
+            </nav>
 
-            {/* Tabs */}
-            <div style={styles.tabs}>
-                {(['overview', 'history', 'strategy'] as const).map(tab => (
-                    <button
-                        key={tab}
-                        onClick={() => setActiveTab(tab)}
-                        style={{
-                            ...styles.tab,
-                            ...(activeTab === tab ? styles.tabActive : {}),
-                        }}
-                    >
-                        {tab === 'overview' ? '📊 Overview' : tab === 'history' ? '📜 History' : '🧠 Strategy'}
-                    </button>
-                ))}
-            </div>
-
-            {/* Tab Content */}
-            {activeTab === 'overview' && profile && (
-                <div style={styles.overview}>
-                    {/* Skill Card */}
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>Agent Skill Level</h3>
-                        <div style={styles.tierDisplay}>
-                            <span style={{ ...styles.tierBadge, background: TIER_COLORS[profile.skillTier] + '22', color: TIER_COLORS[profile.skillTier], borderColor: TIER_COLORS[profile.skillTier] + '44' }}>
-                                {TIER_LABELS[profile.skillTier]}
+            <div style={s.content}>
+                {/* Progress */}
+                {status && (
+                    <div style={s.progressCard}>
+                        <div style={s.progressHeader}>
+                            <span style={s.progressLabel}>Agent Training</span>
+                            <span style={s.progressValue}>
+                                {status.training.matchesPlayed}/{status.training.matchesRequired}
                             </span>
                         </div>
-                        <div style={styles.statsGrid}>
-                            <StatBox label="Accuracy" value={`${profile.overallAccuracy.toFixed(1)}%`} icon="🎯" />
-                            <StatBox label="Speed" value={SPEED_LABELS[profile.speedTier]} icon="⏱️" />
-                            <StatBox label="Win Rate" value={`${profile.winRate.toFixed(1)}%`} icon="🏆" />
-                            <StatBox label="Best Score" value={profile.bestScore.toString()} icon="⭐" />
-                            <StatBox label="Consistency" value={`${profile.consistencyScore.toFixed(0)}/100`} icon="📈" />
-                            <StatBox label="Avg Level" value={profile.avgMaxLevel.toFixed(1)} icon="📊" />
+                        <div style={s.progressTrack}>
+                            <div style={{
+                                ...s.progressFill,
+                                width: `${status.training.progressPercent}%`,
+                            }} />
+                        </div>
+                        <div style={s.progressStatus}>
+                            {status.training.ready
+                                ? <span style={s.readyText}>Agent is trained and ready</span>
+                                : <span style={s.pendingText}>{status.training.matchesRequired - status.training.matchesPlayed} more games to train</span>}
                         </div>
                     </div>
+                )}
 
-                    {/* Play Style Card */}
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>Play Style</h3>
-                        <div style={styles.statsGrid}>
-                            <StatBox label="Stacking Style" value={STYLE_LABELS[profile.stackingStyle]} icon="🧱" />
-                            <StatBox
-                                label="Preferred Columns"
-                                value={profile.preferredColumns.length > 0 ? profile.preferredColumns.map(c => c + 1).join(', ') : 'N/A'}
-                                icon="📍"
-                            />
-                            <StatBox
-                                label="Weak Columns"
-                                value={profile.weakColumns.length > 0 ? profile.weakColumns.map(c => c + 1).join(', ') : 'None'}
-                                icon="⚠️"
-                            />
-                            <StatBox
-                                label="Trend"
-                                value={profile.improvementTrend > 5 ? '📈 Improving' : profile.improvementTrend < -5 ? '📉 Declining' : '➡️ Stable'}
-                                icon="📉"
-                            />
+                {/* Tabs */}
+                <div style={s.tabs}>
+                    {(['overview', 'history', 'strategy'] as const).map(tab => (
+                        <button
+                            key={tab}
+                            onClick={() => setActiveTab(tab)}
+                            style={{
+                                ...s.tab,
+                                ...(activeTab === tab ? s.tabActive : {}),
+                            }}
+                        >
+                            {tab === 'overview' ? 'Overview' : tab === 'history' ? 'History' : 'Strategy'}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Overview */}
+                {activeTab === 'overview' && profile && tier && (
+                    <div style={s.grid}>
+                        {/* Tier card */}
+                        <div style={s.tierCard}>
+                            <div style={{
+                                ...s.tierBadge,
+                                color: tier.color,
+                                background: tier.bg,
+                                border: `1px solid ${tier.border}`,
+                            }}>
+                                {tier.label}
+                            </div>
+                            <div style={s.tierStats}>
+                                <Stat label="Accuracy" value={`${profile.overallAccuracy.toFixed(1)}%`} />
+                                <Stat label="Win Rate" value={`${profile.winRate.toFixed(1)}%`} />
+                                <Stat label="Best Score" value={profile.bestScore.toString()} />
+                                <Stat label="Speed" value={profile.speedTier} />
+                                <Stat label="Consistency" value={`${profile.consistencyScore.toFixed(0)}/100`} />
+                                <Stat label="Avg Level" value={profile.avgMaxLevel.toFixed(1)} />
+                            </div>
                         </div>
-                    </div>
 
-                    {/* Level Performance */}
-                    {profile.levelPerformance.length > 0 && (
-                        <div style={styles.card}>
-                            <h3 style={styles.cardTitle}>Performance by Level</h3>
-                            <div style={styles.levelBars}>
-                                {profile.levelPerformance.map(lp => (
-                                    <div key={lp.level} style={styles.levelBarRow}>
-                                        <span style={styles.levelLabel}>L{lp.level}</span>
-                                        <div style={styles.levelBarTrack}>
-                                            <div
-                                                style={{
-                                                    ...styles.levelBarFill,
+                        {/* Play style */}
+                        <div style={s.card}>
+                            <h3 style={s.cardTitle}>Play Style</h3>
+                            <div style={s.kvList}>
+                                <KV label="Stacking" value={STYLE_LABELS[profile.stackingStyle] || profile.stackingStyle} />
+                                <KV label="Preferred Columns" value={profile.preferredColumns.length ? profile.preferredColumns.map(c => c + 1).join(', ') : 'N/A'} />
+                                <KV label="Weak Columns" value={profile.weakColumns.length ? profile.weakColumns.map(c => c + 1).join(', ') : 'None'} />
+                                <KV label="Trend" value={profile.improvementTrend > 5 ? '↑ Improving' : profile.improvementTrend < -5 ? '↓ Declining' : '→ Stable'} />
+                            </div>
+                        </div>
+
+                        {/* Level bars */}
+                        {profile.levelPerformance.length > 0 && (
+                            <div style={{ ...s.card, gridColumn: '1 / -1' }}>
+                                <h3 style={s.cardTitle}>Performance by Level</h3>
+                                <div style={s.levelBars}>
+                                    {profile.levelPerformance.map(lp => (
+                                        <div key={lp.level} style={s.levelRow}>
+                                            <span style={s.levelLabel}>L{lp.level}</span>
+                                            <div style={s.levelTrack}>
+                                                <div style={{
+                                                    ...s.levelFill,
                                                     width: `${lp.accuracy}%`,
                                                     background: lp.accuracy >= 80 ? '#22c55e' : lp.accuracy >= 60 ? '#f59e0b' : '#ef4444',
-                                                }}
-                                            />
+                                                }} />
+                                            </div>
+                                            <span style={s.levelValue}>{lp.accuracy.toFixed(0)}%</span>
                                         </div>
-                                        <span style={styles.levelValue}>{lp.accuracy.toFixed(0)}%</span>
-                                        <span style={styles.levelSamples}>n={lp.sampleSize}</span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* History */}
+                {activeTab === 'history' && stats && (
+                    <div style={s.grid}>
+                        <div style={s.card}>
+                            <h3 style={s.cardTitle}>Lifetime</h3>
+                            <div style={s.tierStats}>
+                                <Stat label="Matches" value={stats.totalMatches.toString()} />
+                                <Stat label="Wins" value={stats.aggregates.wins.toString()} />
+                                <Stat label="Total Score" value={stats.aggregates.totalScore.toString()} />
+                                <Stat label="Avg Accuracy" value={`${stats.aggregates.avgAccuracy.toFixed(1)}%`} />
+                                <Stat label="Play Time" value={stats.aggregates.totalPlayTimeFormatted} />
+                                <Stat label="Win Rate" value={`${stats.aggregates.winRate.toFixed(1)}%`} />
+                            </div>
+                        </div>
+
+                        <div style={{ ...s.card, gridColumn: '1 / -1' }}>
+                            <h3 style={s.cardTitle}>Recent Matches</h3>
+                            <div style={s.matchList}>
+                                {stats.matches.map((m, i) => (
+                                    <div key={m.matchId} style={s.matchRow}>
+                                        <span style={s.matchIdx}>#{stats.totalMatches - i}</span>
+                                        <span style={{
+                                            ...s.matchResult,
+                                            color: m.result === 'win' ? '#22c55e' : '#ef4444',
+                                            background: m.result === 'win' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                                            border: `1px solid ${m.result === 'win' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                                        }}>
+                                            {m.result}
+                                        </span>
+                                        <span style={s.matchStat}>{m.finalScore} pts</span>
+                                        <span style={s.matchStat}>{m.accuracy.toFixed(0)}%</span>
+                                        <span style={s.matchStat}>Lv {m.maxLevel}</span>
+                                        <span style={s.matchStat}>{m.avgResponseTimeMs.toFixed(0)}ms</span>
+                                        <span style={s.matchTime}>{new Date(m.endedAt).toLocaleDateString()}</span>
+                                    </div>
+                                ))}
+                                {stats.matches.length === 0 && (
+                                    <div style={s.empty}>No matches yet. Play some games!</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Strategy */}
+                {activeTab === 'strategy' && profile && (
+                    <div style={s.grid}>
+                        <div style={s.card}>
+                            <h3 style={s.cardTitle}>Agent Strategy</h3>
+                            <p style={s.cardDesc}>
+                                This profile is what your AI agent uses to play. It&apos;s generated from your play history and updates after each game.
+                            </p>
+                            <pre style={s.strategyBox}>{profile.strategySummary}</pre>
+                        </div>
+
+                        <div style={s.card}>
+                            <h3 style={s.cardTitle}>How Training Works</h3>
+                            <div style={s.steps}>
+                                {[
+                                    { n: '01', t: 'Play manually', d: 'Play 5+ games. Every move, timing, and pattern is recorded.' },
+                                    { n: '02', t: 'Profile generated', d: 'We analyze accuracy, speed, stacking patterns, and preferences.' },
+                                    { n: '03', t: 'Agent learns', d: 'Your AI receives your strategy and plays just like you.' },
+                                    { n: '04', t: 'Keep improving', d: 'Each game refines the profile. Your agent gets smarter over time.' },
+                                ].map(step => (
+                                    <div key={step.n} style={s.step}>
+                                        <span style={s.stepNum}>{step.n}</span>
+                                        <div>
+                                            <div style={s.stepTitle}>{step.t}</div>
+                                            <div style={s.stepDesc}>{step.d}</div>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
                         </div>
-                    )}
-                </div>
-            )}
+                    </div>
+                )}
 
-            {activeTab === 'history' && stats && (
-                <div style={styles.history}>
-                    {/* Aggregate Stats */}
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>Lifetime Stats</h3>
-                        <div style={styles.statsGrid}>
-                            <StatBox label="Total Matches" value={stats.totalMatches.toString()} icon="🎮" />
-                            <StatBox label="Wins" value={stats.aggregates.wins.toString()} icon="🏆" />
-                            <StatBox label="Losses" value={stats.aggregates.losses.toString()} icon="💀" />
-                            <StatBox label="Total Score" value={stats.aggregates.totalScore.toString()} icon="⭐" />
-                            <StatBox label="Avg Accuracy" value={`${stats.aggregates.avgAccuracy.toFixed(1)}%`} icon="🎯" />
-                            <StatBox label="Play Time" value={stats.aggregates.totalPlayTimeFormatted} icon="⏱️" />
+                {!profile && !loading && (
+                    <div style={s.card}>
+                        <div style={s.empty}>
+                            <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>🎮</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 600, color: '#f7f8f8', marginBottom: '0.5rem' }}>No training data</div>
+                            <div>Play some games to start training your agent.</div>
+                            <a href="/agent" style={s.agentLink}>Go to Agent →</a>
                         </div>
                     </div>
+                )}
+            </div>
 
-                    {/* Recent Matches */}
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>Recent Matches</h3>
-                        <div style={styles.matchList}>
-                            {stats.matches.map((match, i) => (
-                                <div key={match.matchId} style={styles.matchRow}>
-                                    <div style={styles.matchIndex}>#{stats.totalMatches - i}</div>
-                                    <div style={styles.matchResult}>
-                                        <span style={{
-                                            ...styles.matchResultBadge,
-                                            background: match.result === 'win' ? '#22c55e22' : '#ef444422',
-                                            color: match.result === 'win' ? '#22c55e' : '#ef4444',
-                                        }}>
-                                            {match.result === 'win' ? '✅ Win' : match.result === 'loss' ? '❌ Loss' : '🏳️ Abandoned'}
-                                        </span>
-                                    </div>
-                                    <div style={styles.matchStat}>
-                                        <span style={styles.matchStatLabel}>Score</span>
-                                        <span style={styles.matchStatValue}>{match.finalScore}</span>
-                                    </div>
-                                    <div style={styles.matchStat}>
-                                        <span style={styles.matchStatLabel}>Accuracy</span>
-                                        <span style={styles.matchStatValue}>{match.accuracy.toFixed(1)}%</span>
-                                    </div>
-                                    <div style={styles.matchStat}>
-                                        <span style={styles.matchStatLabel}>Level</span>
-                                        <span style={styles.matchStatValue}>{match.maxLevel}</span>
-                                    </div>
-                                    <div style={styles.matchStat}>
-                                        <span style={styles.matchStatLabel}>Speed</span>
-                                        <span style={styles.matchStatValue}>{match.avgResponseTimeMs.toFixed(0)}ms</span>
-                                    </div>
-                                    <div style={styles.matchTime}>
-                                        {new Date(match.endedAt).toLocaleDateString()}
-                                    </div>
-                                </div>
-                            ))}
-                            {stats.matches.length === 0 && (
-                                <div style={styles.emptyState}>No matches recorded yet. Play some games!</div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {activeTab === 'strategy' && profile && (
-                <div style={styles.strategy}>
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>🧠 Agent Strategy Profile</h3>
-                        <p style={styles.strategyDesc}>
-                            This is the strategy your AI agent will use when playing for you.
-                            It&apos;s generated from your play history and continuously updated.
-                        </p>
-                        <div style={styles.strategyBox}>
-                            <pre style={styles.strategyText}>{profile.strategySummary}</pre>
-                        </div>
-                    </div>
-
-                    <div style={styles.card}>
-                        <h3 style={styles.cardTitle}>How Training Works</h3>
-                        <div style={styles.howItWorks}>
-                            <div style={styles.step}>
-                                <div style={styles.stepNum}>1</div>
-                                <div>
-                                    <strong>Play manually</strong>
-                                    <p style={styles.stepDesc}>Play at least 5 games in the Unity game. Your moves, timing, and accuracy are recorded.</p>
-                                </div>
-                            </div>
-                            <div style={styles.step}>
-                                <div style={styles.stepNum}>2</div>
-                                <div>
-                                    <strong>Profile generated</strong>
-                                    <p style={styles.stepDesc}>After 5 games, we analyze your play style — accuracy, speed, stacking patterns, and preferences.</p>
-                                </div>
-                            </div>
-                            <div style={styles.step}>
-                                <div style={styles.stepNum}>3</div>
-                                <div>
-                                    <strong>Agent learns</strong>
-                                    <p style={styles.stepDesc}>Your AI agent receives your strategy profile and uses it to play just like you would.</p>
-                                </div>
-                            </div>
-                            <div style={styles.step}>
-                                <div style={styles.stepNum}>4</div>
-                                <div>
-                                    <strong>Continuous improvement</strong>
-                                    <p style={styles.stepDesc}>Keep playing! Each game refines the profile, making your agent smarter over time.</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {!profile && !loading && (
-                <div style={styles.card}>
-                    <div style={styles.emptyState}>
-                        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎮</div>
-                        <h3>No training data yet</h3>
-                        <p>Play some games in the Unity client to start training your agent.</p>
-                        <a href="/agent" style={styles.agentLink}>Go to Agent →</a>
-                    </div>
-                </div>
-            )}
-
-            <style>{`
-                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-                body { background: #080c14; }
-            `}</style>
+            <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');`}</style>
         </div>
     )
 }
 
-function StatBox({ label, value, icon }: { label: string; value: string; icon: string }) {
+function Stat({ label, value }: { label: string; value: string }) {
     return (
-        <div style={styles.statBox}>
-            <div style={styles.statIcon}>{icon}</div>
-            <div style={styles.statValue}>{value}</div>
-            <div style={styles.statLabel}>{label}</div>
+        <div style={s.stat}>
+            <div style={s.statValue}>{value}</div>
+            <div style={s.statLabel}>{label}</div>
         </div>
     )
 }
 
-const styles: Record<string, React.CSSProperties> = {
-    container: {
-        maxWidth: '1200px',
-        margin: '0 auto',
-        padding: '2rem 1.5rem',
-        fontFamily: "'Inter', sans-serif",
-        color: '#e2e8f0',
+function KV({ label, value }: { label: string; value: string }) {
+    return (
+        <div style={s.kv}>
+            <span style={s.kvLabel}>{label}</span>
+            <span style={s.kvValue}>{value}</span>
+        </div>
+    )
+}
+
+const s: Record<string, React.CSSProperties> = {
+    page: {
+        fontFamily: "'Inter', system-ui, sans-serif",
+        color: '#f7f8f8',
+        background: '#08090a',
         minHeight: '100vh',
-        background: '#080c14',
     },
-    connectPrompt: {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '60vh',
-        gap: '1.5rem',
-        textAlign: 'center',
+
+    /* Nav */
+    nav: {
+        background: 'rgba(15, 16, 17, 0.95)',
+        borderBottom: '1px solid rgba(255,255,255,0.05)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 50,
     },
-    connectIcon: { fontSize: '4rem' },
-    connectTitle: { fontSize: '2rem', fontWeight: 700, color: '#f1f5f9' },
-    connectDesc: { fontSize: '1rem', color: '#64748b', maxWidth: '400px' },
-    header: {
+    navInner: {
+        maxWidth: '1100px',
+        margin: '0 auto',
+        padding: '0.6rem 1.5rem',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: '2rem',
-        flexWrap: 'wrap',
-        gap: '1rem',
     },
-    title: { fontSize: '1.75rem', fontWeight: 700, color: '#f1f5f9', margin: 0 },
-    subtitle: { fontSize: '0.85rem', color: '#64748b', fontFamily: "'JetBrains Mono', monospace", marginTop: '0.25rem' },
-    headerActions: { display: 'flex', gap: '0.75rem', alignItems: 'center' },
-    refreshBtn: {
-        padding: '0.5rem 1rem',
+    navLeft: { display: 'flex', alignItems: 'center', gap: '0.75rem' },
+    logoLink: { textDecoration: 'none', display: 'flex' },
+    logoIcon: {
+        width: '32px', height: '32px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(124,58,237,0.08)',
         borderRadius: '8px',
-        background: 'rgba(255,255,255,0.05)',
-        border: '1px solid rgba(255,255,255,0.1)',
-        color: '#94a3b8',
-        fontSize: '0.8rem',
+        border: '1px solid rgba(124,58,237,0.15)',
+    },
+    navDivider: { width: '1px', height: '20px', background: 'rgba(255,255,255,0.06)' },
+    pageTitle: {
+        fontSize: '0.85rem', fontWeight: 600,
+        color: '#f7f8f8', letterSpacing: '-0.01em',
+    },
+    navRight: { display: 'flex', alignItems: 'center', gap: '0.5rem' },
+    walletBadge: {
+        display: 'flex', alignItems: 'center', gap: '0.35rem',
+        padding: '0.25rem 0.6rem',
+        borderRadius: '8px',
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        fontSize: '0.7rem', color: '#8a8f98',
+        fontFamily: "'JetBrains Mono', monospace",
+    },
+    walletDot: {
+        width: '5px', height: '5px', borderRadius: '50%',
+        background: '#22c55e',
+    },
+    refreshBtn: {
+        width: '32px', height: '32px',
+        borderRadius: '8px',
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        color: '#62666d',
+        fontSize: '0.85rem',
         cursor: 'pointer',
-        fontFamily: "'Inter', sans-serif",
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
     },
     agentLink: {
-        padding: '0.5rem 1rem',
+        padding: '0.35rem 0.75rem',
         borderRadius: '8px',
-        background: 'rgba(139,92,246,0.15)',
-        border: '1px solid rgba(139,92,246,0.3)',
+        background: 'rgba(124,58,237,0.08)',
+        border: '1px solid rgba(124,58,237,0.15)',
         color: '#a78bfa',
-        fontSize: '0.8rem',
+        fontSize: '0.75rem',
         textDecoration: 'none',
         fontWeight: 500,
     },
-    error: {
-        padding: '0.75rem 1rem',
-        borderRadius: '8px',
-        background: 'rgba(239,68,68,0.1)',
-        border: '1px solid rgba(239,68,68,0.2)',
-        color: '#fca5a5',
-        fontSize: '0.85rem',
-        marginBottom: '1.5rem',
+
+    /* Connect */
+    connectPrompt: {
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        minHeight: '70vh',
+        gap: '1rem', textAlign: 'center',
+        padding: '2rem',
     },
-    progressSection: {
-        marginBottom: '2rem',
-        padding: '1.25rem',
+    connectIcon: {
+        width: '80px', height: '80px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(124,58,237,0.06)',
+        borderRadius: '20px',
+        border: '1px solid rgba(124,58,237,0.1)',
+        marginBottom: '0.5rem',
+    },
+    connectTitle: {
+        fontSize: '1.75rem', fontWeight: 700,
+        color: '#f7f8f8', letterSpacing: '-0.03em',
+    },
+    connectDesc: { fontSize: '0.9rem', color: '#8a8f98', maxWidth: '400px' },
+
+    /* Content */
+    content: {
+        maxWidth: '1100px',
+        margin: '0 auto',
+        padding: '1.5rem',
+    },
+
+    /* Progress */
+    progressCard: {
+        padding: '1rem 1.25rem',
         borderRadius: '12px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.06)',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.05)',
+        marginBottom: '1.25rem',
     },
     progressHeader: {
         display: 'flex',
         justifyContent: 'space-between',
-        marginBottom: '0.75rem',
+        marginBottom: '0.6rem',
     },
-    progressLabel: { fontSize: '0.85rem', fontWeight: 600, color: '#94a3b8' },
-    progressValue: { fontSize: '0.85rem', fontFamily: "'JetBrains Mono', monospace", color: '#a78bfa' },
-    progressBar: {
-        height: '8px',
-        borderRadius: '4px',
-        background: 'rgba(255,255,255,0.06)',
+    progressLabel: {
+        fontSize: '0.78rem', fontWeight: 600,
+        color: '#8a8f98',
+    },
+    progressValue: {
+        fontSize: '0.78rem',
+        fontFamily: "'JetBrains Mono', monospace",
+        color: '#a78bfa',
+    },
+    progressTrack: {
+        height: '4px',
+        borderRadius: '2px',
+        background: 'rgba(255,255,255,0.05)',
         overflow: 'hidden',
     },
     progressFill: {
         height: '100%',
-        borderRadius: '4px',
-        transition: 'width 0.5s ease',
+        borderRadius: '2px',
+        background: 'linear-gradient(90deg, #7c3aed, #22c55e)',
+        transition: 'width 0.6s ease',
     },
-    progressStatus: { marginTop: '0.75rem', fontSize: '0.8rem' },
-    readyBadge: { color: '#22c55e', fontWeight: 500 },
-    pendingBadge: { color: '#f59e0b', fontWeight: 500 },
+    progressStatus: { marginTop: '0.5rem', fontSize: '0.72rem' },
+    readyText: { color: '#22c55e', fontWeight: 500 },
+    pendingText: { color: '#f59e0b', fontWeight: 500 },
+
+    /* Tabs */
     tabs: {
         display: 'flex',
-        gap: '0.5rem',
-        marginBottom: '1.5rem',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        paddingBottom: '0.5rem',
+        gap: '0.25rem',
+        marginBottom: '1.25rem',
+        padding: '0.2rem',
+        background: 'rgba(255,255,255,0.02)',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.04)',
     },
     tab: {
-        padding: '0.5rem 1rem',
+        padding: '0.4rem 1rem',
         borderRadius: '8px',
         background: 'transparent',
-        border: '1px solid transparent',
-        color: '#64748b',
-        fontSize: '0.85rem',
+        border: 'none',
+        color: '#62666d',
+        fontSize: '0.78rem',
         fontWeight: 500,
         cursor: 'pointer',
         fontFamily: "'Inter', sans-serif",
+        transition: 'all 0.15s',
+        flex: 1,
+        textAlign: 'center' as const,
     },
     tabActive: {
-        background: 'rgba(139,92,246,0.1)',
-        borderColor: 'rgba(139,92,246,0.25)',
+        background: 'rgba(124,58,237,0.1)',
         color: '#a78bfa',
+        boxShadow: '0 0 0 1px rgba(124,58,237,0.15)',
     },
-    overview: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
-    history: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
-    strategy: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
+
+    /* Grid */
+    grid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+        gap: '1rem',
+    },
+
+    /* Cards */
     card: {
-        padding: '1.5rem',
-        borderRadius: '12px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.06)',
+        padding: '1.25rem',
+        borderRadius: '14px',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.05)',
     },
     cardTitle: {
-        fontSize: '1rem',
-        fontWeight: 600,
-        color: '#f1f5f9',
-        marginBottom: '1rem',
+        fontSize: '0.85rem', fontWeight: 600,
+        color: '#f7f8f8',
+        letterSpacing: '-0.01em',
+        marginBottom: '0.75rem',
         marginTop: 0,
     },
-    tierDisplay: { textAlign: 'center', marginBottom: '1.5rem' },
+    cardDesc: {
+        fontSize: '0.8rem', color: '#8a8f98',
+        lineHeight: 1.6, marginBottom: '1rem',
+    },
+    tierCard: {
+        padding: '1.5rem',
+        borderRadius: '14px',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.05)',
+        textAlign: 'center' as const,
+    },
     tierBadge: {
         display: 'inline-block',
-        padding: '0.5rem 1.5rem',
+        padding: '0.4rem 1.25rem',
         borderRadius: '999px',
-        fontSize: '1.1rem',
+        fontSize: '0.9rem',
         fontWeight: 600,
-        border: '1px solid',
+        marginBottom: '1.25rem',
+        letterSpacing: '-0.01em',
     },
-    statsGrid: {
+    tierStats: {
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-        gap: '0.75rem',
+        gridTemplateColumns: 'repeat(3, 1fr)',
+        gap: '0.5rem',
     },
-    statBox: {
-        padding: '1rem',
+    stat: {
+        padding: '0.75rem',
         borderRadius: '10px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.06)',
-        textAlign: 'center',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.04)',
+        textAlign: 'center' as const,
     },
-    statIcon: { fontSize: '1.5rem', marginBottom: '0.5rem' },
-    statValue: { fontSize: '1.1rem', fontWeight: 600, color: '#f1f5f9', fontFamily: "'JetBrains Mono', monospace" },
-    statLabel: { fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.05em' },
-    levelBars: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
-    levelBarRow: { display: 'flex', alignItems: 'center', gap: '0.75rem' },
-    levelLabel: { width: '30px', fontSize: '0.75rem', color: '#94a3b8', fontFamily: "'JetBrains Mono', monospace" },
-    levelBarTrack: { flex: 1, height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' },
-    levelBarFill: { height: '100%', borderRadius: '3px', transition: 'width 0.3s ease' },
-    levelValue: { width: '45px', textAlign: 'right', fontSize: '0.75rem', color: '#e2e8f0', fontFamily: "'JetBrains Mono', monospace" },
-    levelSamples: { width: '40px', fontSize: '0.65rem', color: '#475569' },
-    matchList: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
+    statValue: {
+        fontSize: '1rem', fontWeight: 600,
+        color: '#f7f8f8',
+        fontFamily: "'JetBrains Mono', monospace",
+        letterSpacing: '-0.02em',
+    },
+    statLabel: {
+        fontSize: '0.6rem', color: '#62666d',
+        marginTop: '0.15rem',
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.06em',
+        fontWeight: 500,
+    },
+
+    /* KV list */
+    kvList: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
+    kv: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '0.5rem 0.75rem',
+        borderRadius: '8px',
+        background: 'rgba(255,255,255,0.02)',
+    },
+    kvLabel: { fontSize: '0.75rem', color: '#62666d', fontWeight: 500 },
+    kvValue: { fontSize: '0.75rem', color: '#f7f8f8', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" },
+
+    /* Level bars */
+    levelBars: { display: 'flex', flexDirection: 'column', gap: '0.4rem' },
+    levelRow: { display: 'flex', alignItems: 'center', gap: '0.6rem' },
+    levelLabel: {
+        width: '28px', fontSize: '0.7rem',
+        color: '#8a8f98', fontFamily: "'JetBrains Mono', monospace",
+    },
+    levelTrack: {
+        flex: 1, height: '4px', borderRadius: '2px',
+        background: 'rgba(255,255,255,0.05)',
+        overflow: 'hidden',
+    },
+    levelFill: {
+        height: '100%', borderRadius: '2px',
+        transition: 'width 0.4s ease',
+    },
+    levelValue: {
+        width: '40px', textAlign: 'right' as const,
+        fontSize: '0.7rem', color: '#f7f8f8',
+        fontFamily: "'JetBrains Mono', monospace",
+    },
+
+    /* Match list */
+    matchList: { display: 'flex', flexDirection: 'column', gap: '0.35rem' },
     matchRow: {
         display: 'flex',
         alignItems: 'center',
-        gap: '1rem',
-        padding: '0.75rem 1rem',
+        gap: '0.75rem',
+        padding: '0.6rem 0.75rem',
         borderRadius: '8px',
-        background: 'rgba(255,255,255,0.02)',
-        border: '1px solid rgba(255,255,255,0.04)',
-        flexWrap: 'wrap',
+        background: 'rgba(255,255,255,0.015)',
+        border: '1px solid rgba(255,255,255,0.03)',
     },
-    matchIndex: { width: '40px', fontSize: '0.75rem', color: '#475569', fontFamily: "'JetBrains Mono', monospace" },
-    matchResult: {},
-    matchResultBadge: {
-        padding: '0.2rem 0.6rem',
-        borderRadius: '999px',
-        fontSize: '0.72rem',
+    matchIdx: {
+        width: '36px', fontSize: '0.68rem',
+        color: '#3e3e44',
+        fontFamily: "'JetBrains Mono', monospace",
+    },
+    matchResult: {
+        padding: '0.1rem 0.5rem',
+        borderRadius: '6px',
+        fontSize: '0.62rem',
         fontWeight: 600,
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.04em',
     },
-    matchStat: { textAlign: 'center' as const },
-    matchStatLabel: { display: 'block', fontSize: '0.6rem', color: '#475569', textTransform: 'uppercase' as const },
-    matchStatValue: { display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0', fontFamily: "'JetBrains Mono', monospace" },
-    matchTime: { marginLeft: 'auto', fontSize: '0.7rem', color: '#475569' },
-    strategyDesc: { fontSize: '0.85rem', color: '#94a3b8', marginBottom: '1rem', lineHeight: 1.6 },
+    matchStat: {
+        fontSize: '0.72rem', color: '#d0d6e0',
+        fontFamily: "'JetBrains Mono', monospace",
+    },
+    matchTime: {
+        marginLeft: 'auto',
+        fontSize: '0.65rem', color: '#3e3e44',
+    },
+
+    /* Strategy */
     strategyBox: {
-        padding: '1.25rem',
+        padding: '1rem',
         borderRadius: '10px',
         background: 'rgba(0,0,0,0.3)',
-        border: '1px solid rgba(139,92,246,0.15)',
-    },
-    strategyText: {
-        fontSize: '0.8rem',
+        border: '1px solid rgba(124,58,237,0.1)',
+        fontSize: '0.72rem',
         color: '#c4b5fd',
         fontFamily: "'JetBrains Mono', monospace",
-        whiteSpace: 'pre-wrap',
+        whiteSpace: 'pre-wrap' as const,
         margin: 0,
         lineHeight: 1.8,
     },
-    howItWorks: { display: 'flex', flexDirection: 'column', gap: '1rem' },
-    step: { display: 'flex', gap: '1rem', alignItems: 'flex-start' },
+    steps: { display: 'flex', flexDirection: 'column', gap: '0.75rem' },
+    step: { display: 'flex', gap: '0.75rem' },
     stepNum: {
-        width: '32px',
-        height: '32px',
-        borderRadius: '50%',
-        background: 'rgba(139,92,246,0.15)',
-        border: '1px solid rgba(139,92,246,0.3)',
+        width: '28px', height: '28px',
+        borderRadius: '8px',
+        background: 'rgba(124,58,237,0.08)',
+        border: '1px solid rgba(124,58,237,0.12)',
         color: '#a78bfa',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontWeight: 700,
-        fontSize: '0.85rem',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: '0.68rem', fontWeight: 700,
+        fontFamily: "'JetBrains Mono', monospace",
         flexShrink: 0,
     },
-    stepDesc: { fontSize: '0.8rem', color: '#64748b', marginTop: '0.25rem', lineHeight: 1.5 },
-    emptyState: {
-        textAlign: 'center',
+    stepTitle: { fontSize: '0.8rem', fontWeight: 600, color: '#f7f8f8', marginBottom: '0.15rem' },
+    stepDesc: { fontSize: '0.75rem', color: '#8a8f98', lineHeight: 1.5 },
+
+    /* Empty */
+    empty: {
+        textAlign: 'center' as const,
         padding: '3rem',
-        color: '#64748b',
+        color: '#62666d',
+        fontSize: '0.85rem',
     },
 }
