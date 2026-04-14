@@ -4,6 +4,8 @@ import { agentFetchPaid } from '@/lib/agent-mpp'
 import { loadProfile } from '@/lib/trainingStore'
 import { generateProfile } from '@/lib/profileGenerator'
 import { loadMatches, getMatchCount } from '@/lib/trainingStore'
+import { makePayment, getSupportedChains, getRecommendedChain } from '@/lib/payments'
+import type { SupportedChain } from '@/lib/payments/types'
 
 function getOpenAIClient() {
     return new OpenAI({
@@ -123,25 +125,58 @@ export async function POST(request: NextRequest) {
         }
 
         // ── Step 2b: Autonomously pay & fetch if data requested ─────────
+        let paymentChain: SupportedChain | null = null
         if (wantsData && !gameAction) {
-            const baseUrl  = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
-            const endpoint = `${baseUrl}/api/paid-data`
-            console.log(`[agent] Fetching paid endpoint: ${endpoint}`)
+            // Detect preferred chain from message or use default
+            const recommendedChain = getRecommendedChain()
+            const msgLower = message.toLowerCase()
+            if (/base|ethereum|evm/i.test(msgLower)) {
+                paymentChain = msgLower.includes('ethereum') ? 'ethereum' : 'base'
+            } else if (/solana/i.test(msgLower)) {
+                paymentChain = 'solana-devnet'
+            } else {
+                paymentChain = recommendedChain
+            }
+
+            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
+            const endpoint = paymentChain.startsWith('solana-')
+                ? `${baseUrl}/api/paid-data`
+                : `${baseUrl}/api/paid-data/evm?chain=${paymentChain}`
+            console.log(`[agent] Fetching paid endpoint on ${paymentChain}: ${endpoint}`)
 
             try {
-                paidData     = await agentFetchPaid(endpoint)
-                paymentMade  = true
-                console.log('[agent] ✅ Payment successful, data received:', paidData)
+                if (paymentChain.startsWith('solana-')) {
+                    // Solana MPP payment
+                    paidData = await agentFetchPaid(endpoint)
+                } else {
+                    // EVM x402 payment
+                    const result = await makePayment({
+                        amount: '1000000', // 1 USDC
+                        chain: paymentChain,
+                        recipient: process.env.EVM_RECIPIENT_ADDRESS ?? process.env.MPP_RECIPIENT_ADDRESS ?? '',
+                    })
+                    if (!result.success) throw new Error(result.error)
+                    paidData = {
+                        message: 'Here is your paid data! 🎉',
+                        chain: paymentChain,
+                        protocol: 'x402',
+                        txHash: result.txHash,
+                    }
+                }
+                paymentMade = true
+                console.log(`[agent] ✅ Payment successful on ${paymentChain}:`, paidData)
             } catch (err) {
                 paymentError = err instanceof Error ? err.message : String(err)
-                console.error('[agent] ❌ Payment/fetch failed:', paymentError)
+                console.error(`[agent] ❌ Payment/fetch failed on ${paymentChain}:`, paymentError)
             }
         }
 
         // ── Step 3: Build system prompt ──────────────────────────────────
         let systemPrompt =
             'You are an AI agent that autonomously controls the StakeStack Unity game AND can make ' +
-            'Solana MPP (Micro-Payment Protocol) payments to access paid data. ' +
+            'multi-chain payments to access paid data. ' +
+            'Supported payment chains: Solana (MPP), Base (x402/EIP-3009), Ethereum (x402/EIP-3009). ' +
+            'Default chain: Base (cheapest). ' +
             'The game is a competitive tile-stacking game where players stack tiles on columns. ' +
             'Available game modes: Bot Match, Practice Match, Main Menu, and Practice Stats.' +
             trainingContext
@@ -202,6 +237,7 @@ export async function POST(request: NextRequest) {
                     reply,
                     paymentMade,
                     paymentError,
+                    paymentChain,
                     model,
                     gameAction,
                     gameCmdResult,

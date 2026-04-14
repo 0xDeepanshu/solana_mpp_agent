@@ -1,16 +1,12 @@
 /**
  * GET /api/skills
  *
- * Returns the StakeStack agent skill definitions in OpenAI function-calling
- * (tool-use) format. Any LLM agent can fetch this endpoint to discover what
- * tools are available and how to call them.
- *
- * Now includes training system tools.
+ * Returns the StakeStack agent skill definitions in OpenAI function-calling format.
+ * Now includes multi-chain payment tools and ERC-8004 agent identity.
  */
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
 
-/** OpenAI-compatible tool definitions */
 const TOOLS = [
     {
         type: 'function',
@@ -18,15 +14,11 @@ const TOOLS = [
             name: 'check_bot_eligibility',
             description:
                 'Check if a wallet has played at least 5 matches and training status. ' +
-                'ALWAYS call this before calling control_game with StartBotMode. ' +
-                'If botUnlocked is false, tell the user how many matches they still need.',
+                'ALWAYS call this before calling control_game with StartBotMode.',
             parameters: {
                 type: 'object',
                 properties: {
-                    wallet: {
-                        type: 'string',
-                        description: 'The Solana wallet public key (base58) to check eligibility for.',
-                    },
+                    wallet: { type: 'string', description: 'The Solana wallet public key (base58).' },
                 },
                 required: ['wallet'],
                 additionalProperties: false,
@@ -39,7 +31,6 @@ const TOOLS = [
             name: 'control_game',
             description:
                 'Send a command to the StakeStack Unity WebGL game. ' +
-                'Use this when the user wants to start a game mode, go to the main menu, or check stats. ' +
                 'Commands are delivered via SSE; the game page must be open in a browser tab. ' +
                 'When starting a bot match, the player\'s training profile will be used if available.',
             parameters: {
@@ -47,18 +38,8 @@ const TOOLS = [
                 properties: {
                     action: {
                         type: 'string',
-                        enum: [
-                            'StartBotMode',
-                            'StartPracticeMode',
-                            'ExitToMainMenu',
-                            'GetPracticeStatus',
-                        ],
-                        description:
-                            'The game action to perform. ' +
-                            'StartBotMode = start a bot/AI match (uses training profile). ' +
-                            'StartPracticeMode = start a practice/solo match. ' +
-                            'ExitToMainMenu = exit to the main menu. ' +
-                            'GetPracticeStatus = fetch practice stats from Unity.',
+                        enum: ['StartBotMode', 'StartPracticeMode', 'ExitToMainMenu', 'GetPracticeStatus'],
+                        description: 'The game action to perform.',
                     },
                 },
                 required: ['action'],
@@ -71,14 +52,20 @@ const TOOLS = [
         function: {
             name: 'fetch_paid_data',
             description:
-                'Fetch data from the Solana MPP-gated endpoint. ' +
-                'The server automatically handles the 402 payment flow using its agent wallet — ' +
-                'no browser wallet or manual signing needed. ' +
-                'Cost: 1 USDC on Solana Devnet. ' +
-                'Use this when the user asks to fetch paid content, access gated data, or retrieve paid information.',
+                'Fetch data from a multi-chain paid endpoint. ' +
+                'Supports: Solana (MPP), Base (x402/EIP-3009), Ethereum (x402/EIP-3009). ' +
+                'Default chain: Base (cheapest). Cost: 1 USDC. ' +
+                'The server handles payments autonomously — no browser wallet needed. ' +
+                'Mention chain name in your message to use a specific chain (e.g. "on Base" or "on Solana").',
             parameters: {
                 type: 'object',
-                properties: {},
+                properties: {
+                    chain: {
+                        type: 'string',
+                        enum: ['solana-devnet', 'base', 'ethereum'],
+                        description: 'Payment chain. Default: base (cheapest EVM).',
+                    },
+                },
                 required: [],
                 additionalProperties: false,
             },
@@ -89,16 +76,11 @@ const TOOLS = [
         function: {
             name: 'get_training_profile',
             description:
-                'Get the player\'s training profile showing their agent\'s learned behavior. ' +
-                'Shows accuracy, speed, stacking style, preferred columns, skill tier, and strategy summary. ' +
-                'Use this when the user asks about their agent training, skill level, or wants to see how their agent will play.',
+                'Get the player\'s training profile showing their agent\'s learned behavior.',
             parameters: {
                 type: 'object',
                 properties: {
-                    wallet: {
-                        type: 'string',
-                        description: 'The Solana wallet public key (base58) to get training profile for.',
-                    },
+                    wallet: { type: 'string', description: 'The Solana wallet public key (base58).' },
                 },
                 required: ['wallet'],
                 additionalProperties: false,
@@ -110,77 +92,89 @@ const TOOLS = [
         function: {
             name: 'get_training_stats',
             description:
-                'Get detailed training statistics and match history for the dashboard. ' +
-                'Shows win/loss record, accuracy trends, score history, and per-match breakdown. ' +
-                'Use this when the user asks about their training progress or match history.',
+                'Get detailed training statistics and match history.',
             parameters: {
                 type: 'object',
                 properties: {
-                    wallet: {
-                        type: 'string',
-                        description: 'The Solana wallet public key (base58).',
-                    },
-                    limit: {
-                        type: 'number',
-                        description: 'Number of recent matches to return (default 20).',
-                    },
+                    wallet: { type: 'string', description: 'The Solana wallet public key (base58).' },
+                    limit: { type: 'number', description: 'Number of recent matches (default 20).' },
                 },
                 required: ['wallet'],
                 additionalProperties: false,
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'get_supported_chains',
+            description:
+                'Get the list of supported payment chains, their protocols (MPP/x402), and USDC addresses. ' +
+                'Use this when the user asks about payment options or supported chains.',
+            parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'register_agent_identity',
+            description:
+                'Register the StakeStack agent onchain using ERC-8004. ' +
+                'Creates a globally unique onchain identity on Base or Ethereum. ' +
+                'Use this when the user wants to register the agent onchain or set up agent identity.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Agent name (default: StakeStack Agent).' },
+                    description: { type: 'string', description: 'What the agent does.' },
+                    chain: { type: 'string', enum: ['base', 'ethereum'], description: 'Chain to register on (default: base).' },
+                },
+                required: [],
+                additionalProperties: false,
+            },
+        },
+    },
 ]
 
-/** Plain-text system prompt for agents that don't support structured tool-calling */
-const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack tile-stacking game. You have access to five HTTP tools:
+const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack tile-stacking game with MULTI-CHAIN payment support.
 
-TOOL 0: check_bot_eligibility  ← ALWAYS call this before StartBotMode
-  Endpoint: GET ${BASE_URL}/api/player/status?wallet=<PUBKEY>
-  Returns: { wallet, matches, botUnlocked, training: { matchesPlayed, ready, skillTier, accuracy } }
-  Bot Mode requires matches >= 5. If botUnlocked is false, tell the user how many more matches they need.
+PAYMENT CHAINS:
+- Base (x402/EIP-3009) — DEFAULT, cheapest ($0.001 gas)
+- Ethereum (x402/EIP-3009) — Maximum decentralization
+- Solana Devnet (MPP) — For Solana-native payments
 
-TOOL 1: control_game
-  Endpoint: POST ${BASE_URL}/api/game
-  Body: { "action": "StartBotMode" | "StartPracticeMode" | "ExitToMainMenu" | "GetPracticeStatus" }
-  Use when the user wants to play the game or change game modes.
-  IMPORTANT: Only call StartBotMode after check_bot_eligibility confirms botUnlocked === true.
-  When the player has a training profile, the agent will play using their learned style.
-  
-  Natural language → action mapping:
-  - "start a bot match", "play vs bot", "fight the AI" → StartBotMode  (only if eligible)
-  - "practice mode", "solo mode", "train"             → StartPracticeMode
-  - "go to main menu", "exit", "go back", "home"      → ExitToMainMenu
-  - "get my stats", "how am I doing", "show score"    → GetPracticeStatus
+TOOLS:
+1. check_bot_eligibility — Check wallet status before bot matches
+2. control_game — Send game commands (StartBotMode, StartPracticeMode, etc.)
+3. fetch_paid_data — Pay 1 USDC on any supported chain to get data
+4. get_training_profile — View agent training profile
+5. get_training_stats — View match history
+6. get_supported_chains — List all payment chains and protocols
+7. register_agent_identity — Register agent onchain (ERC-8004)
 
-TOOL 2: fetch_paid_data
-  Endpoint: GET ${BASE_URL}/api/paid-data
-  No body needed. The server auto-handles Solana MPP payment (1 USDC on Solana Devnet).
-  Use when the user wants to fetch/access paid content.
+To use a specific chain for payments, mention it in context (e.g. "pay on Base" or "use Solana").
 
-TOOL 3: get_training_profile
-  Endpoint: GET ${BASE_URL}/api/training/profile?wallet=<PUBKEY>
-  Returns the player's training profile: skill tier, accuracy, speed, stacking style, strategy.
-  Use when the user asks about their agent's training or skill level.
+Always call the appropriate endpoint and report results to the user.`
 
-TOOL 4: get_training_stats
-  Endpoint: GET ${BASE_URL}/api/training/stats?wallet=<PUBKEY>&limit=<N>
-  Returns match history and aggregate training statistics.
-  Use when the user wants to see their training progress or history.
-
-Always call the appropriate HTTP endpoint and report the result to the user.`
-
-// ── Handler ───────────────────────────────────────────────────────────────────
 export async function GET() {
     return Response.json(
         {
-            version: '2.0.0',
+            version: '3.0.0',
             name: 'StakeStack Agent Skills',
-            description:
-                'Tool definitions for autonomous StakeStack game control, Solana MPP payments, and agent training.',
+            description: 'Multi-chain agent tools: Solana MPP, EVM x402, game control, training, ERC-8004 identity.',
             baseUrl: BASE_URL,
             tools: TOOLS,
             systemPrompt: SYSTEM_PROMPT,
+            chains: [
+                { chain: 'solana-devnet', protocol: 'MPP', usdc: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' },
+                { chain: 'base', protocol: 'x402', usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', recommended: true },
+                { chain: 'ethereum', protocol: 'x402', usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' },
+            ],
         },
         {
             headers: {
