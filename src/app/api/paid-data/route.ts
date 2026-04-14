@@ -1,25 +1,9 @@
-import { mppx } from '@/lib/mpp'
+import { getMppx } from '@/lib/mpp'
 import { NextRequest } from 'next/server'
 
-// ── AUTH GUARD (disabled — uncomment to enable) ──────────────────────────────
-// const AGENT_API_KEY = process.env.AGENT_API_KEY
-//
-// function checkAuth(req: NextRequest): Response | null {
-//     if (!AGENT_API_KEY) return null // no key configured → open
-//     const provided = req.headers.get('x-agent-key')
-//     if (provided !== AGENT_API_KEY) {
-//         return Response.json({ error: 'Unauthorized. Provide X-Agent-Key header.' }, { status: 401 })
-//     }
-//     return null
-// }
-// ─────────────────────────────────────────────────────────────────────────────
-
 export async function GET(request: NextRequest) {
-    // ── AUTH GUARD (disabled) ────────────────────────────────────────────────
-    // const authError = checkAuth(request)
-    // if (authError) return authError
-    // ────────────────────────────────────────────────────────────────────────
     // 1. Check if user has paid
+    const mppx = getMppx()
     let result: Awaited<ReturnType<ReturnType<typeof mppx.charge>>>
     try {
         result = await mppx.charge({

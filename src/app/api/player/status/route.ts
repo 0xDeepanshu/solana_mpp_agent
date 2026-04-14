@@ -1,16 +1,16 @@
 /**
  * GET /api/player/status?wallet=<pubkey>
  *
- * Returns the number of matches played and whether Bot Mode is unlocked.
+ * Returns match count, bot eligibility, AND training readiness.
+ * This is the single source of truth for a player's progression.
  *
  * Response:
- *   { wallet: string, matches: number, botUnlocked: boolean }
- *
- * botUnlocked is true when matches >= 5.
+ *   { wallet, matches, botUnlocked, training }
  */
 
 import { NextRequest } from 'next/server'
 import { matchStore } from '@/lib/matchStore'
+import { getMatchCount, loadProfile } from '@/lib/trainingStore'
 
 export function GET(request: NextRequest) {
     const wallet = request.nextUrl.searchParams.get('wallet')
@@ -25,7 +25,25 @@ export function GET(request: NextRequest) {
     const matches = matchStore.get(wallet) ?? 0
     const botUnlocked = matches >= 5
 
-    return Response.json({ wallet, matches, botUnlocked })
+    // Training system status
+    const trainingMatches = getMatchCount(wallet)
+    const trainingReady = trainingMatches >= 5
+    const profile = loadProfile(wallet)
+
+    return Response.json({
+        wallet,
+        matches,
+        botUnlocked,
+        training: {
+            matchesPlayed: trainingMatches,
+            matchesRequired: 5,
+            ready: trainingReady,
+            progressPercent: Math.min(100, (trainingMatches / 5) * 100),
+            hasProfile: profile !== null,
+            skillTier: profile?.skillTier ?? null,
+            accuracy: profile?.overallAccuracy ?? null,
+        },
+    })
 }
 
 export const dynamic = 'force-dynamic'

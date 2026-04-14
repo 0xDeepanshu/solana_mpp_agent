@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useAccount } from '@solana/connector'
+import { ConnectButtonBaseUI } from '@/components/WalletConnect'
 
 interface Message {
     id: string
@@ -9,6 +11,7 @@ interface Message {
     timestamp: Date
     gameAction?: string | null
     paymentMade?: boolean
+    trainingProfile?: { skillTier: string; accuracy: number; matchesTrained: number } | null
 }
 
 interface AgentStatus {
@@ -16,109 +19,190 @@ interface AgentStatus {
     detail?: string
 }
 
+interface TrainingStatus {
+    matchesPlayed: number
+    matchesRequired: number
+    ready: boolean
+    skillTier: string | null
+    accuracy: number | null
+}
+
 const GAME_QUICK_PROMPTS = [
-    { label: '▶ Bot Match',    msg: 'Start a bot match in StakeStack', emoji: '🤖' },
-    { label: '🎯 Practice',    msg: 'Start practice mode',             emoji: '🎯' },
-    { label: '🏠 Main Menu',   msg: 'Go to main menu',                 emoji: '🏠' },
-    { label: '📊 Stats',       msg: 'Get my practice stats',           emoji: '📊' },
+    { label: '▶ Bot Match', msg: 'Start a bot match in StakeStack', emoji: '🤖' },
+    { label: '🎯 Practice', msg: 'Start practice mode', emoji: '🎯' },
+    { label: '🏠 Main Menu', msg: 'Go to main menu', emoji: '🏠' },
+    { label: '📊 Stats', msg: 'Get my practice stats', emoji: '📊' },
 ]
 
 const DATA_QUICK_PROMPTS = [
-    { label: 'Fetch paid data',         msg: 'Fetch the paid data' },
-    { label: 'Pay & get content',       msg: 'Pay and get me the data' },
-    { label: 'What can you access?',    msg: 'What can you access?' },
+    { label: 'Fetch paid data', msg: 'Fetch the paid data' },
+    { label: 'Pay & get content', msg: 'Pay and get me the data' },
+]
+
+const TRAINING_QUICK_PROMPTS = [
+    { label: '🧠 My Profile', msg: 'Show my training profile' },
+    { label: '📈 Progress', msg: 'How is my agent training going?' },
 ]
 
 export default function AgentPage() {
+    const { address } = useAccount()
     const [messages, setMessages] = useState<Message[]>([
         {
             id: 'welcome',
             role: 'system',
             content:
-                '🤖 Agent online. I can **play the StakeStack Unity game** autonomously and make **Solana MPP payments** — no browser wallet needed.\n\nTry the game controls on the right or type a command below.',
+                '🤖 Agent online. I can **play the StakeStack Unity game** autonomously and make **Solana MPP payments** — no browser wallet needed.\n\n' +
+                '🎮 Play games to **train your agent** — after 5 games, I learn your play style and play just like you!\n\n' +
+                'Try the game controls on the right or type a command below.',
             timestamp: new Date(),
         },
     ])
-    const [input, setInput]   = useState('')
+    const [input, setInput] = useState('')
     const [status, setStatus] = useState<AgentStatus>({ type: 'idle' })
     const [unityLoaded, setUnityLoaded] = useState(false)
-    const [splitView, setSplitView]     = useState(true)
+    const [splitView, setSplitView] = useState(true)
+    const [trainingStatus, setTrainingStatus] = useState<TrainingStatus | null>(null)
+    const [gameState, setGameState] = useState<{
+        status: string
+        score: number
+        level: number
+        moves: number
+        accuracy: number
+    } | null>(null)
     const bottomRef = useRef<HTMLDivElement>(null)
     const iframeRef = useRef<HTMLIFrameElement>(null)
 
+    // Scroll to bottom on new messages
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [messages])
 
-    const sendMessage = useCallback(async (text?: string) => {
-        const msg = (text ?? input).trim()
-        if (!msg || status.type !== 'idle') return
-
-        const isGameCmd = /bot.?match|practice|main.?menu|stats|vs bot|train|play bot|go back/i.test(msg)
-
-        const userMsg: Message = {
-            id: crypto.randomUUID(),
-            role: 'user',
-            content: msg,
-            timestamp: new Date(),
+    // Fetch training status when wallet connects
+    useEffect(() => {
+        if (!address) {
+            setTrainingStatus(null)
+            return
         }
-        setMessages(prev => [...prev, userMsg])
-        setInput('')
-        setStatus({ type: isGameCmd ? 'gaming' : 'thinking' })
-
-        try {
-            if (!isGameCmd && /data|fetch|paid|content|get|show|give|retrieve|access/i.test(msg)) {
-                setStatus({ type: 'paying', detail: 'Agent is signing & broadcasting Solana tx...' })
-            }
-
-            const res  = await fetch('/api/agent', {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ message: msg }),
+        fetch(`/api/player/status?wallet=${address}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.training) {
+                    setTrainingStatus(data.training)
+                }
             })
+            .catch(() => {})
+    }, [address])
 
-            const data = await res.json()
-
-            if (!res.ok || data.error) {
-                throw new Error(data.error ?? 'Unknown error')
-            }
-
-            let replyContent = data.reply
-            if (data.paymentMade) {
-                replyContent = `💳 **Payment made:** 1 USDC on Solana Devnet\n\n${data.reply}`
-            }
-            if (data.gameAction) {
-                replyContent = `🎮 **Game command sent:** ${data.gameCmdResult}\n\n${data.reply}`
-            }
-
-            setMessages(prev => [
-                ...prev,
-                {
-                    id:          crypto.randomUUID(),
-                    role:        'assistant',
-                    content:     replyContent,
-                    timestamp:   new Date(),
-                    gameAction:  data.gameAction,
-                    paymentMade: data.paymentMade,
-                },
-            ])
-            setStatus({ type: 'done' })
-            setTimeout(() => setStatus({ type: 'idle' }), 2000)
-        } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err)
-            setMessages(prev => [
-                ...prev,
-                {
-                    id:        crypto.randomUUID(),
-                    role:      'assistant',
-                    content:   `❌ Error: ${errMsg}`,
-                    timestamp: new Date(),
-                },
-            ])
-            setStatus({ type: 'error', detail: errMsg })
-            setTimeout(() => setStatus({ type: 'idle' }), 3000)
+    // Subscribe to game state via SSE
+    useEffect(() => {
+        const es = new EventSource('/api/game')
+        es.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data)
+                if (data.type === 'gameState' && data.state) {
+                    setGameState({
+                        status: data.state.status,
+                        score: data.state.score,
+                        level: data.state.level,
+                        moves: data.state.moves,
+                        accuracy: data.state.accuracy,
+                    })
+                }
+            } catch {}
         }
-    }, [input, status.type])
+        return () => es.close()
+    }, [])
+
+    // Register wallet with game bridge when connected
+    useEffect(() => {
+        if (!address) return
+        fetch('/api/game', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'registerWallet', wallet: address }),
+        }).catch(() => {})
+    }, [address])
+
+    const sendMessage = useCallback(
+        async (text?: string) => {
+            const msg = (text ?? input).trim()
+            if (!msg || status.type !== 'idle') return
+
+            const isGameCmd = /bot.?match|practice|main.?menu|stats|vs bot|train|play bot|go back/i.test(msg)
+
+            const userMsg: Message = {
+                id: crypto.randomUUID(),
+                role: 'user',
+                content: msg,
+                timestamp: new Date(),
+            }
+            setMessages(prev => [...prev, userMsg])
+            setInput('')
+            setStatus({ type: isGameCmd ? 'gaming' : 'thinking' })
+
+            try {
+                if (!isGameCmd && /data|fetch|paid|content|get|show|give|retrieve|access/i.test(msg)) {
+                    setStatus({ type: 'paying', detail: 'Agent is signing & broadcasting Solana tx...' })
+                }
+
+                const res = await fetch('/api/agent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg, wallet: address }),
+                })
+
+                const data = await res.json()
+
+                if (!res.ok || data.error) {
+                    throw new Error(data.error ?? 'Unknown error')
+                }
+
+                // Update training status if returned
+                if (data.trainingProfile) {
+                    setTrainingStatus(prev =>
+                        prev ? { ...prev, skillTier: data.trainingProfile.skillTier, accuracy: data.trainingProfile.accuracy } : prev
+                    )
+                }
+
+                let replyContent = data.reply
+                if (data.paymentMade) {
+                    replyContent = `💳 **Payment made:** 1 USDC on Solana Devnet\n\n${data.reply}`
+                }
+                if (data.gameAction) {
+                    replyContent = `🎮 **Game command sent:** ${data.gameCmdResult}\n\n${data.reply}`
+                }
+
+                setMessages(prev => [
+                    ...prev,
+                    {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: replyContent,
+                        timestamp: new Date(),
+                        gameAction: data.gameAction,
+                        paymentMade: data.paymentMade,
+                        trainingProfile: data.trainingProfile,
+                    },
+                ])
+                setStatus({ type: 'done' })
+                setTimeout(() => setStatus({ type: 'idle' }), 2000)
+            } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err)
+                setMessages(prev => [
+                    ...prev,
+                    {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: `❌ Error: ${errMsg}`,
+                        timestamp: new Date(),
+                    },
+                ])
+                setStatus({ type: 'error', detail: errMsg })
+                setTimeout(() => setStatus({ type: 'idle' }), 3000)
+            }
+        },
+        [input, status.type, address]
+    )
 
     function handleKeyDown(e: React.KeyboardEvent) {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -128,23 +212,23 @@ export default function AgentPage() {
     }
 
     const statusLabel: Record<AgentStatus['type'], string> = {
-        idle:     '● Online',
+        idle: '● Online',
         thinking: '◌ Thinking...',
-        paying:   '⟳ Paying on-chain...',
-        gaming:   '🎮 Sending game cmd...',
+        paying: '⟳ Paying on-chain...',
+        gaming: '🎮 Sending game cmd...',
         fetching: '⟳ Fetching data...',
-        done:     '✓ Done',
-        error:    '✕ Error',
+        done: '✓ Done',
+        error: '✕ Error',
     }
 
     const statusColor: Record<AgentStatus['type'], string> = {
-        idle:     '#22c55e',
+        idle: '#22c55e',
         thinking: '#f59e0b',
-        paying:   '#8b5cf6',
-        gaming:   '#06b6d4',
+        paying: '#8b5cf6',
+        gaming: '#06b6d4',
         fetching: '#3b82f6',
-        done:     '#22c55e',
-        error:    '#ef4444',
+        done: '#22c55e',
+        error: '#ef4444',
     }
 
     return (
@@ -205,6 +289,33 @@ export default function AgentPage() {
                 .status-dot {
                     width: 6px; height: 6px; border-radius: 50%;
                     transition: all 0.3s ease;
+                }
+
+                .wallet-badge {
+                    display: flex; align-items: center; gap: 0.4rem;
+                    padding: 0.25rem 0.6rem;
+                    border-radius: 8px;
+                    background: rgba(34,197,94,0.08);
+                    border: 1px solid rgba(34,197,94,0.2);
+                    font-size: 0.68rem; color: #22c55e;
+                    font-family: 'JetBrains Mono', monospace;
+                }
+
+                .training-badge {
+                    display: flex; align-items: center; gap: 0.4rem;
+                    padding: 0.25rem 0.6rem;
+                    border-radius: 8px;
+                    font-size: 0.68rem; font-weight: 500;
+                }
+                .training-badge.ready {
+                    background: rgba(34,197,94,0.08);
+                    border: 1px solid rgba(34,197,94,0.2);
+                    color: #22c55e;
+                }
+                .training-badge.training {
+                    background: rgba(245,158,11,0.08);
+                    border: 1px solid rgba(245,158,11,0.2);
+                    color: #f59e0b;
                 }
 
                 .split-toggle {
@@ -302,6 +413,29 @@ export default function AgentPage() {
 
                 .loading-text { font-size: 0.78rem; color: #475569; }
 
+                /* Game state overlay on top of iframe */
+                .game-state-overlay {
+                    position: absolute;
+                    top: 8px; left: 8px; right: 8px;
+                    display: flex; gap: 0.4rem;
+                    z-index: 3;
+                    flex-wrap: wrap;
+                }
+                .game-state-chip {
+                    padding: 0.25rem 0.6rem;
+                    border-radius: 6px;
+                    background: rgba(0,0,0,0.7);
+                    backdrop-filter: blur(8px);
+                    border: 1px solid rgba(255,255,255,0.1);
+                    font-size: 0.65rem;
+                    font-family: 'JetBrains Mono', monospace;
+                    color: #e2e8f0;
+                    display: flex; align-items: center; gap: 0.3rem;
+                }
+                .game-state-chip .dot {
+                    width: 5px; height: 5px; border-radius: 50%;
+                }
+
                 /* Quick game controls below iframe */
                 .game-controls {
                     display: grid; grid-template-columns: 1fr 1fr;
@@ -344,6 +478,8 @@ export default function AgentPage() {
                     color: #64748b; font-family: 'JetBrains Mono', monospace;
                 }
                 .chip-dot { width: 5px; height: 5px; border-radius: 50%; background: #22c55e; }
+                .chip-ready { color: #22c55e; border-color: rgba(34,197,94,0.2); }
+                .chip-training { color: #f59e0b; border-color: rgba(245,158,11,0.2); }
 
                 /* ── Messages ── */
                 .messages-area {
@@ -407,6 +543,14 @@ export default function AgentPage() {
                     border: 1px solid rgba(6,182,212,0.25);
                     border-radius: 999px; font-size: 0.68rem;
                     color: #67e8f9; font-family: 'JetBrains Mono', monospace;
+                }
+                .msg-training-tag {
+                    display: inline-flex; align-items: center; gap: 4px;
+                    margin-bottom: 6px; padding: 2px 8px;
+                    background: rgba(34,197,94,0.12);
+                    border: 1px solid rgba(34,197,94,0.25);
+                    border-radius: 999px; font-size: 0.68rem;
+                    color: #4ade80; font-family: 'JetBrains Mono', monospace;
                 }
 
                 .msg-time {
@@ -519,6 +663,16 @@ export default function AgentPage() {
                     border-color: rgba(139,92,246,0.45);
                     color: #c4b5fd;
                 }
+                .quick-btn.training {
+                    background: rgba(34,197,94,0.08);
+                    border: 1px solid rgba(34,197,94,0.2);
+                    color: #4ade80;
+                }
+                .quick-btn.training:hover {
+                    background: rgba(34,197,94,0.18);
+                    border-color: rgba(34,197,94,0.45);
+                    color: #86efac;
+                }
                 .quick-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
                 .input-row {
@@ -567,6 +721,19 @@ export default function AgentPage() {
                     margin-top: 0.5rem; font-size: 0.68rem;
                     color: #1e293b; text-align: center;
                 }
+
+                .connect-bar {
+                    display: flex; align-items: center; justify-content: center;
+                    gap: 0.75rem;
+                    padding: 0.5rem 1rem;
+                    background: rgba(139,92,246,0.05);
+                    border-bottom: 1px solid rgba(139,92,246,0.1);
+                }
+                .connect-text { font-size: 0.75rem; color: #94a3b8; }
+                .connect-link {
+                    font-size: 0.75rem; color: #a78bfa;
+                    text-decoration: none; font-weight: 500;
+                }
             `}</style>
 
             {/* ── Top bar ─────────────────────────────────────── */}
@@ -574,9 +741,25 @@ export default function AgentPage() {
                 <div className="agent-avatar">🤖</div>
                 <div className="agent-info">
                     <div className="agent-name">StakeStack Agent</div>
-                    <div className="agent-desc">Llama 3.3 70B · Solana Devnet · Unity WebGL bridge</div>
+                    <div className="agent-desc">
+                        {address
+                            ? `Connected · ${address.slice(0, 4)}...${address.slice(-4)} · ${trainingStatus?.ready ? 'Trained' : 'Training'}`
+                            : 'Connect wallet to train your agent'}
+                    </div>
                 </div>
                 <div className="top-bar-right">
+                    {trainingStatus && (
+                        <div className={`training-badge ${trainingStatus.ready ? 'ready' : 'training'}`}>
+                            {trainingStatus.ready
+                                ? `🧠 ${trainingStatus.skillTier ?? 'Trained'} · ${trainingStatus.accuracy?.toFixed(0) ?? '?'}%`
+                                : `🔄 ${trainingStatus.matchesPlayed}/${trainingStatus.matchesRequired}`}
+                        </div>
+                    )}
+                    {address && (
+                        <div className="wallet-badge">
+                            🔗 {address.slice(0, 4)}...{address.slice(-4)}
+                        </div>
+                    )}
                     <div className="status-badge" style={{ color: statusColor[status.type] }}>
                         <div className="status-dot" style={{ background: statusColor[status.type] }} />
                         {statusLabel[status.type]}
@@ -591,36 +774,61 @@ export default function AgentPage() {
                 </div>
             </div>
 
+            {/* ── Connect bar (when no wallet) ── */}
+            {!address && (
+                <div className="connect-bar">
+                    <span className="connect-text">Connect your wallet to train your agent and track progress</span>
+                    <ConnectButtonBaseUI />
+                </div>
+            )}
+
             {/* ── Workspace ────────────────────────────────────── */}
             <div className="workspace">
-
                 {/* ── Chat Panel ─────────────────────────────── */}
                 <div className="chat-panel">
                     {/* Info chips */}
                     <div className="info-chips">
-                        <div className="chip"><div className="chip-dot" />Solana Devnet</div>
+                        <div className="chip">
+                            <div className="chip-dot" />
+                            Solana Devnet
+                        </div>
                         <div className="chip">🎮 Unity WebGL</div>
                         <div className="chip">🪙 USDC · 1 per call</div>
                         <div className="chip">🔐 Agent auto-signs</div>
                         <div className="chip">📡 SSE bridge</div>
+                        {trainingStatus && (
+                            <div className={`chip ${trainingStatus.ready ? 'chip-ready' : 'chip-training'}`}>
+                                {trainingStatus.ready ? '🧠 Agent trained' : `🔄 Training ${trainingStatus.matchesPlayed}/${trainingStatus.matchesRequired}`}
+                            </div>
+                        )}
                     </div>
 
                     {/* Messages */}
                     <div className="messages-area">
                         {messages.map(msg => (
                             <div key={msg.id} className={`message ${msg.role}`}>
-                                <div className={`msg-avatar ${msg.role === 'user' ? 'user' : msg.role === 'system' ? 'system' : 'agent'}`}>
+                                <div
+                                    className={`msg-avatar ${
+                                        msg.role === 'user' ? 'user' : msg.role === 'system' ? 'system' : 'agent'
+                                    }`}
+                                >
                                     {msg.role === 'user' ? '👤' : msg.role === 'system' ? '⚙️' : '🤖'}
                                 </div>
                                 <div className="msg-body">
-                                    {msg.gameAction && (
-                                        <div className="msg-game-tag">🎮 game cmd</div>
+                                    {msg.gameAction && <div className="msg-game-tag">🎮 game cmd</div>}
+                                    {msg.trainingProfile && (
+                                        <div className="msg-training-tag">
+                                            🧠 using {msg.trainingProfile.skillTier} profile · {msg.trainingProfile.accuracy.toFixed(0)}% accuracy
+                                        </div>
                                     )}
-                                    <div className="msg-bubble" dangerouslySetInnerHTML={{
-                                        __html: msg.content
-                                            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                            .replace(/\n/g, '<br/>')
-                                    }} />
+                                    <div
+                                        className="msg-bubble"
+                                        dangerouslySetInnerHTML={{
+                                            __html: msg.content
+                                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                                .replace(/\n/g, '<br/>'),
+                                        }}
+                                    />
                                     <div className="msg-time">
                                         {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </div>
@@ -629,7 +837,7 @@ export default function AgentPage() {
                         ))}
 
                         {/* Status indicators */}
-                        {(status.type === 'thinking') && (
+                        {status.type === 'thinking' && (
                             <div className="typing-indicator">
                                 <div className="msg-avatar agent">🤖</div>
                                 <div className="typing-bubble">
@@ -695,6 +903,18 @@ export default function AgentPage() {
                                 </button>
                             ))}
                             <div className="tab-divider" />
+                            <span className="prompt-tab-label">🧠</span>
+                            {TRAINING_QUICK_PROMPTS.map(p => (
+                                <button
+                                    key={p.label}
+                                    className="quick-btn training"
+                                    onClick={() => sendMessage(p.msg)}
+                                    disabled={status.type !== 'idle' || !address}
+                                >
+                                    {p.label}
+                                </button>
+                            ))}
+                            <div className="tab-divider" />
                             <span className="prompt-tab-label">💳</span>
                             {DATA_QUICK_PROMPTS.map(p => (
                                 <button
@@ -713,7 +933,11 @@ export default function AgentPage() {
                                 <textarea
                                     id="chat-input"
                                     className="chat-input"
-                                    placeholder="Tell the agent to play the game or fetch paid data…"
+                                    placeholder={
+                                        address
+                                            ? 'Tell the agent to play the game, check training, or fetch paid data…'
+                                            : 'Connect wallet first, or just ask the agent anything…'
+                                    }
                                     value={input}
                                     onChange={e => setInput(e.target.value)}
                                     onKeyDown={handleKeyDown}
@@ -734,9 +958,7 @@ export default function AgentPage() {
                                 </svg>
                             </button>
                         </div>
-                        <p className="hint-text">
-                            Enter to send · Game cmds via SSE · Payments on Solana Devnet
-                        </p>
+                        <p className="hint-text">Enter to send · Game cmds via SSE · Training data from Unity · Payments on Solana Devnet</p>
                     </div>
                 </div>
 
@@ -757,6 +979,20 @@ export default function AgentPage() {
                             <span className="loading-text">Loading Unity WebGL…</span>
                         </div>
 
+                        {/* Game state overlay */}
+                        {gameState && gameState.status === 'playing' && (
+                            <div className="game-state-overlay">
+                                <div className="game-state-chip">
+                                    <div className="dot" style={{ background: '#22c55e' }} />
+                                    Playing
+                                </div>
+                                <div className="game-state-chip">Score: {gameState.score}</div>
+                                <div className="game-state-chip">Level: {gameState.level}</div>
+                                <div className="game-state-chip">Moves: {gameState.moves}</div>
+                                <div className="game-state-chip">Accuracy: {gameState.accuracy.toFixed(0)}%</div>
+                            </div>
+                        )}
+
                         <iframe
                             ref={iframeRef}
                             id="unity-frame"
@@ -764,7 +1000,6 @@ export default function AgentPage() {
                             title="StakeStack Unity Game"
                             allow="fullscreen"
                             onLoad={() => {
-                                // Mark as "structurally loaded" — Unity itself has its own load time
                                 setTimeout(() => setUnityLoaded(true), 1000)
                             }}
                         />
@@ -785,7 +1020,6 @@ export default function AgentPage() {
                         ))}
                     </div>
                 </div>
-
             </div>
         </>
     )

@@ -1,11 +1,16 @@
 import OpenAI from 'openai'
 import { NextRequest } from 'next/server'
 import { agentFetchPaid } from '@/lib/agent-mpp'
+import { loadProfile } from '@/lib/trainingStore'
+import { generateProfile } from '@/lib/profileGenerator'
+import { loadMatches, getMatchCount } from '@/lib/trainingStore'
 
-const client = new OpenAI({
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY,
-})
+function getOpenAIClient() {
+    return new OpenAI({
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: process.env.OPENROUTER_API_KEY,
+    })
+}
 
 // ── Supported game actions ───────────────────────────────────────────────────
 const GAME_ACTIONS = {
@@ -37,12 +42,12 @@ const ACTION_LABEL: Record<GameActionValue, string> = {
 }
 
 /** Post a command to the /api/game SSE bridge */
-async function dispatchGameCommand(action: GameActionValue): Promise<void> {
+async function dispatchGameCommand(action: GameActionValue, wallet?: string): Promise<void> {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
     const res = await fetch(`${baseUrl}/api/game`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, wallet }),
     })
     if (!res.ok) {
         const text = await res.text()
@@ -53,13 +58,49 @@ async function dispatchGameCommand(action: GameActionValue): Promise<void> {
 // ── Route handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
     try {
-        const { message } = await request.json()
+        const { message, wallet } = await request.json()
 
         if (!message || typeof message !== 'string') {
             return Response.json({ error: 'Message is required' }, { status: 400 })
         }
 
-        // ── Step 1: Detect game vs data intent ──────────────────────────────
+        // ── Load training profile if wallet is provided ──────────────────
+        let trainingProfile = null
+        let trainingContext = ''
+        if (wallet && typeof wallet === 'string') {
+            trainingProfile = loadProfile(wallet)
+            if (!trainingProfile) {
+                // Try generating on the fly if enough matches exist
+                const matchCount = getMatchCount(wallet)
+                if (matchCount >= 5) {
+                    const matches = loadMatches(wallet)
+                    trainingProfile = generateProfile(wallet, matches)
+                }
+            }
+            if (trainingProfile) {
+                trainingContext =
+                    `\n\nPLAYER TRAINING PROFILE (use this to play like the user):\n` +
+                    `- Skill tier: ${trainingProfile.skillTier}\n` +
+                    `- Accuracy: ${trainingProfile.overallAccuracy.toFixed(1)}%\n` +
+                    `- Speed: ${trainingProfile.speedTier} (avg ${trainingProfile.overallAvgResponseTimeMs.toFixed(0)}ms)\n` +
+                    `- Stacking style: ${trainingProfile.stackingStyle}\n` +
+                    `- Preferred columns: ${trainingProfile.preferredColumns.map(c => c + 1).join(', ') || 'none detected'}\n` +
+                    `- Weak columns: ${trainingProfile.weakColumns.map(c => c + 1).join(', ') || 'none detected'}\n` +
+                    `- Win rate: ${trainingProfile.winRate.toFixed(1)}%\n` +
+                    `- Avg score: ${trainingProfile.avgScore.toFixed(0)} | Best: ${trainingProfile.bestScore}\n` +
+                    `- Consistency: ${trainingProfile.consistencyScore.toFixed(0)}/100\n` +
+                    `- Improvement trend: ${trainingProfile.improvementTrend > 0 ? 'improving' : 'declining'}\n` +
+                    `\nFull strategy:\n${trainingProfile.strategySummary}`
+            } else {
+                const matchCount = getMatchCount(wallet)
+                trainingContext =
+                    `\n\nPLAYER TRAINING STATUS: Not yet trained. ` +
+                    `(${matchCount}/5 matches played for training). ` +
+                    `Tell the user to play more games manually so their agent can learn their style.`
+            }
+        }
+
+        // ── Step 1: Detect game vs data intent ──────────────────────────
         const gameAction = detectGameAction(message)
         const wantsData  = /data|fetch|paid|content|get|show|give|retrieve|access/i.test(message)
 
@@ -68,10 +109,10 @@ export async function POST(request: NextRequest) {
         let paymentMade = false
         let paymentError: string | null = null
 
-        // ── Step 2a: Dispatch game command ───────────────────────────────────
+        // ── Step 2a: Dispatch game command ───────────────────────────────
         if (gameAction) {
             try {
-                await dispatchGameCommand(gameAction)
+                await dispatchGameCommand(gameAction, wallet)
                 gameCmdResult = ACTION_LABEL[gameAction]
                 console.log(`[agent] ✅ Game command dispatched: ${gameAction}`)
             } catch (err) {
@@ -81,7 +122,7 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // ── Step 2b: Autonomously pay & fetch if data requested ───────────────
+        // ── Step 2b: Autonomously pay & fetch if data requested ─────────
         if (wantsData && !gameAction) {
             const baseUrl  = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
             const endpoint = `${baseUrl}/api/paid-data`
@@ -97,18 +138,21 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // ── Step 3: Build system prompt ──────────────────────────────────────
+        // ── Step 3: Build system prompt ──────────────────────────────────
         let systemPrompt =
             'You are an AI agent that autonomously controls the StakeStack Unity game AND can make ' +
             'Solana MPP (Micro-Payment Protocol) payments to access paid data. ' +
-            'The game is a competitive blockchain-based staking game. ' +
-            'Available game modes: Bot Match, Practice Match, Main Menu, and Practice Stats.'
+            'The game is a competitive tile-stacking game where players stack tiles on columns. ' +
+            'Available game modes: Bot Match, Practice Match, Main Menu, and Practice Stats.' +
+            trainingContext
 
         if (gameCmdResult && !gameCmdResult.startsWith('FAILED')) {
             systemPrompt +=
                 `\n\nYou just sent the "${gameCmdResult}" command to the StakeStack Unity game. ` +
                 `The command was delivered successfully. ` +
-                `Confirm to the user that you've executed this action in the game.`
+                (trainingProfile
+                    ? `The game is now playing using the player's trained profile (${trainingProfile.skillTier}, ${trainingProfile.overallAccuracy.toFixed(0)}% accuracy). Confirm this to the user.`
+                    : `Confirm to the user that you've executed this action in the game.`)
         } else if (gameCmdResult?.startsWith('FAILED')) {
             systemPrompt +=
                 `\n\nYou attempted to send a game command but it failed: ${gameCmdResult}. ` +
@@ -126,10 +170,11 @@ export async function POST(request: NextRequest) {
             systemPrompt +=
                 '\n\nAnswer the user\'s question. You can:\n' +
                 '- Control the game: "start bot match", "practice mode", "main menu", "get stats"\n' +
-                '- Fetch paid data: use keywords like "fetch", "get data", "show me the paid content"'
+                '- Fetch paid data: use keywords like "fetch", "get data", "show me the paid content"\n' +
+                '- Discuss their training profile and agent performance'
         }
 
-        // ── Step 4: LLM cascade (free models) ───────────────────────────────
+        // ── Step 4: LLM cascade (free models) ───────────────────────────
         const FREE_MODELS = [
             'qwen/qwen3.6-plus-preview:free',
             'stepfun/step-3.5-flash:free',
@@ -142,7 +187,7 @@ export async function POST(request: NextRequest) {
         for (const model of FREE_MODELS) {
             try {
                 console.log(`[agent] Trying model: ${model}`)
-                const response = await client.chat.completions.create({
+                const response = await getOpenAIClient().chat.completions.create({
                     model,
                     messages: [
                         { role: 'system', content: systemPrompt },
@@ -160,6 +205,11 @@ export async function POST(request: NextRequest) {
                     model,
                     gameAction,
                     gameCmdResult,
+                    trainingProfile: trainingProfile ? {
+                        skillTier: trainingProfile.skillTier,
+                        accuracy: trainingProfile.overallAccuracy,
+                        matchesTrained: trainingProfile.totalMatches,
+                    } : null,
                 })
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err)

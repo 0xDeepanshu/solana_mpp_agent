@@ -1,28 +1,60 @@
 /**
  * /api/game — Game command bridge between the AI agent and the Unity WebGL instance.
  *
- * POST /api/game  { action: string }  — Push a command onto the in-memory queue.
+ * POST /api/game  { action: string, wallet?: string }  — Push a command onto the in-memory queue.
  * GET  /api/game                      — SSE stream that delivers queued commands to
  *                                       the Unity page and sends heartbeats every 3 s.
  *
  * Valid actions (from unity.md):
  *   StartBotMode | StartPracticeMode | StartMultiplayerMode | ExitToMainMenu | GetPracticeStatus
+ *
+ * Unity can POST to /api/game/state to update game state back to the web UI.
  */
 
 import { NextRequest } from 'next/server'
 
 // ── In-memory command queue (works in Next.js dev / single-process deploys) ──
-// Each entry: { action: string, id: string, ts: number }
 interface GameCommand {
     action: string
+    wallet?: string
     id: string
     ts: number
 }
 
-// Module-level singleton — survives across requests in the same process.
+// ── Game state (updated by Unity, pushed to web clients) ────────────────────
+interface GameState {
+    status: 'idle' | 'playing' | 'paused' | 'finished'
+    mode: string | null
+    score: number
+    level: number
+    moves: number
+    accuracy: number
+    wallet: string | null
+    matchId: string | null
+    startedAt: number | null
+    lastUpdate: number
+}
+
+// Module-level singleton
 const commandQueue: GameCommand[] = []
-// Registered SSE clients (one per open Unity tab)
 const clients: Set<ReadableStreamDefaultController<Uint8Array>> = new Set()
+
+// Current game state — Unity updates this, web UI reads it via SSE
+let gameState: GameState = {
+    status: 'idle',
+    mode: null,
+    score: 0,
+    level: 1,
+    moves: 0,
+    accuracy: 100,
+    wallet: null,
+    matchId: null,
+    startedAt: null,
+    lastUpdate: Date.now(),
+}
+
+// Connected wallets registry (so Unity knows which wallet to use for training data)
+const connectedWallets: Map<string, { connectedAt: number; lastSeen: number }> = new Map()
 
 const encoder = new TextEncoder()
 
@@ -34,29 +66,49 @@ function heartbeat() {
     return encoder.encode(`: heartbeat\n\n`)
 }
 
-// ── AUTH GUARD (disabled — uncomment to enable) ──────────────────────────────
-// const AGENT_API_KEY = process.env.AGENT_API_KEY
-//
-// function checkAuth(req: NextRequest): Response | null {
-//     if (!AGENT_API_KEY) return null // no key configured → open
-//     const provided = req.headers.get('x-agent-key')
-//     if (provided !== AGENT_API_KEY) {
-//         return Response.json({ error: 'Unauthorized. Provide X-Agent-Key header.' }, { status: 401 })
-//     }
-//     return null
-// }
-// ─────────────────────────────────────────────────────────────────────────────
+function broadcastToClients(data: object) {
+    for (const ctrl of clients) {
+        try {
+            ctrl.enqueue(sseEvent(data))
+        } catch {
+            clients.delete(ctrl)
+        }
+    }
+}
 
 // ── POST — Agent pushes a command ────────────────────────────────────────────
 export async function POST(request: NextRequest) {
-    // ── AUTH GUARD (disabled) ────────────────────────────────────────────────
-    // const authError = checkAuth(request)
-    // if (authError) return authError
-    // ────────────────────────────────────────────────────────────────────────
     try {
         const body = await request.json()
-        const { action } = body as { action?: string }
+        const { action, wallet, gameState: stateUpdate } = body as {
+            action?: string
+            wallet?: string
+            gameState?: Partial<GameState>
+        }
 
+        // ── Handle game state updates from Unity ────────────────────────
+        if (stateUpdate && !action) {
+            gameState = {
+                ...gameState,
+                ...stateUpdate,
+                lastUpdate: Date.now(),
+            }
+            // Broadcast state update to all connected web clients
+            broadcastToClients({ type: 'gameState', state: gameState })
+            console.log(`[game] State updated: ${gameState.status} | score: ${gameState.score} | level: ${gameState.level}`)
+            return Response.json({ ok: true, state: gameState })
+        }
+
+        // ── Handle wallet registration ──────────────────────────────────
+        if (body.type === 'registerWallet' && wallet) {
+            connectedWallets.set(wallet, { connectedAt: Date.now(), lastSeen: Date.now() })
+            gameState.wallet = wallet
+            broadcastToClients({ type: 'walletRegistered', wallet })
+            console.log(`[game] Wallet registered: ${wallet.slice(0, 8)}…`)
+            return Response.json({ ok: true, wallet })
+        }
+
+        // ── Handle game commands ────────────────────────────────────────
         const validActions = [
             'StartBotMode',
             'StartPracticeMode',
@@ -72,19 +124,19 @@ export async function POST(request: NextRequest) {
             )
         }
 
-        const cmd: GameCommand = { action, id: crypto.randomUUID(), ts: Date.now() }
+        const cmd: GameCommand = { action, wallet, id: crypto.randomUUID(), ts: Date.now() }
         commandQueue.push(cmd)
-        console.log(`[game] Command queued: ${action} (${cmd.id}). Clients: ${clients.size}`)
+
+        // If wallet provided, associate with game state
+        if (wallet) {
+            gameState.wallet = wallet
+            connectedWallets.set(wallet, { connectedAt: Date.now(), lastSeen: Date.now() })
+        }
+
+        console.log(`[game] Command queued: ${action} (${cmd.id}) wallet: ${wallet?.slice(0, 8) ?? 'none'}. Clients: ${clients.size}`)
 
         // Immediately push to all connected SSE clients
-        for (const ctrl of clients) {
-            try {
-                ctrl.enqueue(sseEvent(cmd))
-            } catch {
-                // If the client disconnected, remove it
-                clients.delete(ctrl)
-            }
-        }
+        broadcastToClients(cmd)
 
         return Response.json({ ok: true, queued: cmd })
     } catch (err) {
@@ -94,7 +146,13 @@ export async function POST(request: NextRequest) {
 }
 
 // ── GET — Unity page subscribes via SSE ──────────────────────────────────────
-export function GET() {
+export function GET(request: NextRequest) {
+    // Check if this is a state request (for the web dashboard)
+    const mode = request.nextUrl.searchParams.get('mode')
+    if (mode === 'state') {
+        return Response.json(gameState)
+    }
+
     let controller: ReadableStreamDefaultController<Uint8Array>
     let heartbeatTimer: ReturnType<typeof setInterval>
 
@@ -103,6 +161,9 @@ export function GET() {
             controller = ctrl
             clients.add(ctrl)
             console.log(`[game] SSE client connected. Total: ${clients.size}`)
+
+            // Send current game state immediately
+            ctrl.enqueue(sseEvent({ type: 'connected', state: gameState }))
 
             // Drain any commands that arrived before this client connected
             while (commandQueue.length > 0) {
@@ -132,7 +193,7 @@ export function GET() {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache, no-transform',
             Connection: 'keep-alive',
-            'X-Accel-Buffering': 'no', // Nginx / Vercel: disable buffering
+            'X-Accel-Buffering': 'no',
         },
     })
 }

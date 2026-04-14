@@ -5,24 +5,8 @@
  * (tool-use) format. Any LLM agent can fetch this endpoint to discover what
  * tools are available and how to call them.
  *
- * Also returns a plain-text system prompt snippet for agents that don't
- * support structured tool-calling (e.g. basic chat agents).
+ * Now includes training system tools.
  */
-
-// ── AUTH GUARD (disabled — uncomment to enable) ──────────────────────────────
-// import { NextRequest } from 'next/server'
-//
-// const AGENT_API_KEY = process.env.AGENT_API_KEY
-//
-// function checkAuth(request: NextRequest): Response | null {
-//     if (!AGENT_API_KEY) return null // no key configured → open
-//     const provided = request.headers.get('x-agent-key')
-//     if (provided !== AGENT_API_KEY) {
-//         return Response.json({ error: 'Unauthorized. Provide X-Agent-Key header.' }, { status: 401 })
-//     }
-//     return null
-// }
-// ─────────────────────────────────────────────────────────────────────────────
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
 
@@ -33,7 +17,7 @@ const TOOLS = [
         function: {
             name: 'check_bot_eligibility',
             description:
-                'Check if a wallet has played at least 5 matches, which is required to unlock Bot Mode. ' +
+                'Check if a wallet has played at least 5 matches and training status. ' +
                 'ALWAYS call this before calling control_game with StartBotMode. ' +
                 'If botUnlocked is false, tell the user how many matches they still need.',
             parameters: {
@@ -56,7 +40,8 @@ const TOOLS = [
             description:
                 'Send a command to the StakeStack Unity WebGL game. ' +
                 'Use this when the user wants to start a game mode, go to the main menu, or check stats. ' +
-                'Commands are delivered via SSE; the game page must be open in a browser tab.',
+                'Commands are delivered via SSE; the game page must be open in a browser tab. ' +
+                'When starting a bot match, the player\'s training profile will be used if available.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -70,7 +55,7 @@ const TOOLS = [
                         ],
                         description:
                             'The game action to perform. ' +
-                            'StartBotMode = start a bot/AI match. ' +
+                            'StartBotMode = start a bot/AI match (uses training profile). ' +
                             'StartPracticeMode = start a practice/solo match. ' +
                             'ExitToMainMenu = exit to the main menu. ' +
                             'GetPracticeStatus = fetch practice stats from Unity.',
@@ -99,14 +84,60 @@ const TOOLS = [
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'get_training_profile',
+            description:
+                'Get the player\'s training profile showing their agent\'s learned behavior. ' +
+                'Shows accuracy, speed, stacking style, preferred columns, skill tier, and strategy summary. ' +
+                'Use this when the user asks about their agent training, skill level, or wants to see how their agent will play.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    wallet: {
+                        type: 'string',
+                        description: 'The Solana wallet public key (base58) to get training profile for.',
+                    },
+                },
+                required: ['wallet'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'get_training_stats',
+            description:
+                'Get detailed training statistics and match history for the dashboard. ' +
+                'Shows win/loss record, accuracy trends, score history, and per-match breakdown. ' +
+                'Use this when the user asks about their training progress or match history.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    wallet: {
+                        type: 'string',
+                        description: 'The Solana wallet public key (base58).',
+                    },
+                    limit: {
+                        type: 'number',
+                        description: 'Number of recent matches to return (default 20).',
+                    },
+                },
+                required: ['wallet'],
+                additionalProperties: false,
+            },
+        },
+    },
 ]
 
 /** Plain-text system prompt for agents that don't support structured tool-calling */
-const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack game. You have access to three HTTP tools:
+const SYSTEM_PROMPT = `You are an autonomous agent for the StakeStack tile-stacking game. You have access to five HTTP tools:
 
 TOOL 0: check_bot_eligibility  ← ALWAYS call this before StartBotMode
   Endpoint: GET ${BASE_URL}/api/player/status?wallet=<PUBKEY>
-  Returns: { wallet, matches, botUnlocked }
+  Returns: { wallet, matches, botUnlocked, training: { matchesPlayed, ready, skillTier, accuracy } }
   Bot Mode requires matches >= 5. If botUnlocked is false, tell the user how many more matches they need.
 
 TOOL 1: control_game
@@ -114,6 +145,7 @@ TOOL 1: control_game
   Body: { "action": "StartBotMode" | "StartPracticeMode" | "ExitToMainMenu" | "GetPracticeStatus" }
   Use when the user wants to play the game or change game modes.
   IMPORTANT: Only call StartBotMode after check_bot_eligibility confirms botUnlocked === true.
+  When the player has a training profile, the agent will play using their learned style.
   
   Natural language → action mapping:
   - "start a bot match", "play vs bot", "fight the AI" → StartBotMode  (only if eligible)
@@ -126,29 +158,33 @@ TOOL 2: fetch_paid_data
   No body needed. The server auto-handles Solana MPP payment (1 USDC on Solana Devnet).
   Use when the user wants to fetch/access paid content.
 
+TOOL 3: get_training_profile
+  Endpoint: GET ${BASE_URL}/api/training/profile?wallet=<PUBKEY>
+  Returns the player's training profile: skill tier, accuracy, speed, stacking style, strategy.
+  Use when the user asks about their agent's training or skill level.
+
+TOOL 4: get_training_stats
+  Endpoint: GET ${BASE_URL}/api/training/stats?wallet=<PUBKEY>&limit=<N>
+  Returns match history and aggregate training statistics.
+  Use when the user wants to see their training progress or history.
+
 Always call the appropriate HTTP endpoint and report the result to the user.`
 
 // ── Handler ───────────────────────────────────────────────────────────────────
-export async function GET(/* request: NextRequest */) {
-    // ── AUTH GUARD (disabled) ──────────────────────────────────────────────
-    // const authError = checkAuth(request)
-    // if (authError) return authError
-    // ──────────────────────────────────────────────────────────────────────
-
+export async function GET() {
     return Response.json(
         {
-            version: '1.0.0',
+            version: '2.0.0',
             name: 'StakeStack Agent Skills',
             description:
-                'Tool definitions for autonomous StakeStack game control and Solana MPP payments.',
+                'Tool definitions for autonomous StakeStack game control, Solana MPP payments, and agent training.',
             baseUrl: BASE_URL,
             tools: TOOLS,
             systemPrompt: SYSTEM_PROMPT,
-            docs: `${BASE_URL}/skills.md`,
         },
         {
             headers: {
-                'Access-Control-Allow-Origin': '*', // allow any agent/script to fetch
+                'Access-Control-Allow-Origin': '*',
                 'Cache-Control': 'no-store',
             },
         }
