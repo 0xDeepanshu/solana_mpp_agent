@@ -1,25 +1,43 @@
 /**
  * POST /api/player/record
  *
- * Records a completed match for a wallet address.
- * Call this from Unity (or the overlay) when a match finishes.
+ * Records a completed practice match. Mirrors /api/game/finished POST.
+ * Use this as an alternative endpoint if Unity calls it directly.
  *
  * Request body:
- *   { wallet: string, result?: "win" | "loss" | "draw" }
+ *   {
+ *     wallet:  string  — player's wallet public key  (required)
+ *     score?:  number  — match score                 (default 0)
+ *   }
  *
  * Response:
- *   { wallet: string, matches: number, botUnlocked: boolean }
+ *   { matchId, wallet, score, accuracy, timestamp,
+ *     matches, botUnlocked, sessionExpiresAt? }
  *
- * botUnlocked becomes true when matches >= 5.
+ * Redis keys written:
+ *   match:<matchId>            Hash   — full match record (30-day TTL)
+ *   player_matches:<wallet>    List   — ordered matchId history
+ *   practice_matches:<wallet>  String — running counter
+ *   bot_session:<wallet>       String — 24-hour unlock token (if threshold met)
  */
 
 import { NextRequest } from 'next/server'
-import { matchStore } from '@/lib/matchStore'
+import { getRedisClient } from '@/lib/redis'
+
+const MATCHES_REQUIRED = 5
+const SESSION_TTL      = 60 * 60 * 24  // 24 hours
 
 export async function POST(request: NextRequest) {
     try {
-        const body = await request.json() as { wallet?: string; result?: string }
-        const { wallet } = body
+        const body = await request.json() as {
+            wallet?: string
+            score?:  number
+        }
+
+        const {
+            wallet,
+            score = 0,
+        } = body
 
         if (!wallet) {
             return Response.json(
@@ -28,15 +46,53 @@ export async function POST(request: NextRequest) {
             )
         }
 
-        const current = matchStore.get(wallet) ?? 0
-        const updated = current + 1
-        matchStore.set(wallet, updated)
+        const redis     = await getRedisClient()
+        const matchId   = crypto.randomUUID()
+        const timestamp = Date.now()
 
-        const botUnlocked = updated >= 5
+        // ── 1. Store the full match record ────────────────────────────────────
+        await redis.hSet(`match:${matchId}`, {
+            matchId,
+            wallet,
+            score:     String(score),
+            timestamp: String(timestamp),
+        })
+        await redis.expire(`match:${matchId}`, 60 * 60 * 24 * 30) // 30 days
 
-        console.log(`[player] Match recorded for ${wallet.slice(0, 8)}… → ${updated} matches. Bot unlocked: ${botUnlocked}`)
+        // ── 2. Append to player's match history ───────────────────────────────
+        await redis.rPush(`player_matches:${wallet}`, matchId)
 
-        return Response.json({ wallet, matches: updated, botUnlocked })
+        // ── 3. Increment practice counter ─────────────────────────────────────
+        const matches    = await redis.incr(`practice_matches:${wallet}`)
+        const botUnlocked = matches >= MATCHES_REQUIRED
+        let sessionExpiresAt: number | undefined
+
+        if (botUnlocked) {
+            await redis.set(`bot_session:${wallet}`, '1', { EX: SESSION_TTL })
+            await redis.del(`practice_matches:${wallet}`)
+            sessionExpiresAt = timestamp + SESSION_TTL * 1000
+
+            console.log(
+                `[player/record] 🔓 Bot session created for ${wallet.slice(0, 8)}… ` +
+                `Expires at ${new Date(sessionExpiresAt).toISOString()}`
+            )
+        }
+
+        console.log(
+            `[player/record] Match ${matchId.slice(0, 8)}… — ` +
+            `wallet: ${wallet.slice(0, 8)}… | score: ${score} | ` +
+            `matches: ${botUnlocked ? 0 : matches} | botUnlocked: ${botUnlocked}`
+        )
+
+        return Response.json({
+            matchId,
+            wallet,
+            score,
+            timestamp,
+            matches:    botUnlocked ? 0 : matches,
+            botUnlocked,
+            ...(sessionExpiresAt && { sessionExpiresAt }),
+        })
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return Response.json({ error: msg }, { status: 500 })

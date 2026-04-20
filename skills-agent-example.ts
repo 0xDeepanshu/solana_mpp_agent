@@ -18,7 +18,7 @@
  *  Autonomous Bot Loop (checks eligibility first, then plays continuously):
  *    npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop
  *    npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop --rounds 3
- *    npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop --delay 30
+ *    npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop --timeout 180
  *
  * ─── Requirements ─────────────────────────────────────────────────────────────
  *  - OPENROUTER_API_KEY env var (or set it in .env.local)
@@ -73,13 +73,34 @@ function sleep(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms))
 }
 
-function parseArgs(): { wallet?: string; check: boolean; botLoop: boolean; rounds: number; delay: number; message: string } {
+/**
+ * Block until the Unity game signals it has ended via POST /api/game/finished,
+ * or until timeoutSec seconds elapse (returns 408 → we continue anyway).
+ */
+async function waitForGameEnd(timeoutSec = 180): Promise<{ result: string } | null> {
+    console.log(`   ⏳ Waiting for Unity to signal game over (timeout: ${timeoutSec}s)…`)
+    try {
+        const res = await fetch(`${BASE_URL}/api/game/finished?timeout=${timeoutSec}`)
+        if (res.status === 408) {
+            console.log(`   ⚠️  No game-end signal received within ${timeoutSec}s — moving on`)
+            return null
+        }
+        const data = await res.json() as { result: string; matches: number; botUnlocked: boolean }
+        console.log(`   🏁 Game ended — result: ${data.result} | total matches: ${data.matches}`)
+        return data
+    } catch (err) {
+        console.log(`   ⚠️  waitForGameEnd error: ${err instanceof Error ? err.message : err} — moving on`)
+        return null
+    }
+}
+
+function parseArgs(): { wallet?: string; check: boolean; botLoop: boolean; rounds: number; timeout: number; message: string } {
     const args = process.argv.slice(2)
     let wallet: string | undefined
     let check = false
     let botLoop = false
     let rounds = Infinity
-    let delay = 15   // seconds between matches
+    let timeout = 180   // seconds to wait for Unity game-end signal
     const rest: string[] = []
 
     for (let i = 0; i < args.length; i++) {
@@ -91,14 +112,14 @@ function parseArgs(): { wallet?: string; check: boolean; botLoop: boolean; round
             botLoop = true
         } else if (args[i] === '--rounds' && args[i + 1]) {
             rounds = parseInt(args[++i], 10)
-        } else if (args[i] === '--delay' && args[i + 1]) {
-            delay = parseInt(args[++i], 10)
+        } else if ((args[i] === '--timeout' || args[i] === '--delay') && args[i + 1]) {
+            timeout = parseInt(args[++i], 10)
         } else {
             rest.push(args[i])
         }
     }
 
-    return { wallet, check, botLoop, rounds, delay, message: rest.join(' ') }
+    return { wallet, check, botLoop, rounds, timeout, message: rest.join(' ') }
 }
 
 // ── Step 1: Fetch skills from the server ─────────────────────────────────────
@@ -256,10 +277,10 @@ async function runAgent(userMessage: string) {
 }
 
 // ── Autonomous Bot Loop (no LLM needed — direct API calls) ────────────────────
-async function runBotLoop(wallet: string, maxRounds: number, delaySec: number) {
+async function runBotLoop(wallet: string, maxRounds: number, gameTimeoutSec: number) {
     console.log(`\n🤖 Bot Loop starting for wallet: ${wallet.slice(0, 8)}…`)
     console.log(`   Rounds: ${maxRounds === Infinity ? '∞ (Ctrl+C to stop)' : maxRounds}`)
-    console.log(`   Delay between matches: ${delaySec}s\n`)
+    console.log(`   Waiting for: Unity game-end signal (timeout: ${gameTimeoutSec}s)\n`)
 
     // 1. Eligibility check
     const status = await checkEligibility(wallet)
@@ -284,9 +305,8 @@ async function runBotLoop(wallet: string, maxRounds: number, delaySec: number) {
         process.stdout.write(`   Starting bot match… `)
         await sendGameCommand('StartBotMode')
 
-        // Wait for the match duration
-        console.log(`   ⏳ Waiting ${delaySec}s for match to run…`)
-        await sleep(delaySec * 1000)
+        // Block until Unity signals the game has ended (or timeout)
+        await waitForGameEnd(gameTimeoutSec)
 
         // Exit back to menu
         process.stdout.write(`   Exiting to main menu… `)
@@ -294,9 +314,9 @@ async function runBotLoop(wallet: string, maxRounds: number, delaySec: number) {
 
         console.log(`   ✅ Round ${round} complete.\n`)
 
-        // If more rounds left, wait a beat before the next
+        // Brief pause before kicking off the next round
         if (round < maxRounds) {
-            await sleep(2000)
+            await sleep(1500)
         }
     }
 
@@ -305,7 +325,7 @@ async function runBotLoop(wallet: string, maxRounds: number, delaySec: number) {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 async function main() {
-    const { wallet, check, botLoop, rounds, delay, message } = parseArgs()
+    const { wallet, check, botLoop, rounds, timeout, message } = parseArgs()
 
     // --check: just print eligibility and exit
     if (check) {
@@ -326,7 +346,7 @@ async function main() {
             console.error('❌ --bot-loop requires --wallet <PUBKEY>')
             process.exit(1)
         }
-        await runBotLoop(wallet, rounds, delay)
+        await runBotLoop(wallet, rounds, timeout)
         return
     }
 
@@ -335,7 +355,7 @@ async function main() {
         console.error(`
 Usage: npx tsx skills-agent-example.ts "<your message>"
        npx tsx skills-agent-example.ts --wallet <PUBKEY> --check
-       npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop [--rounds N] [--delay SECONDS]
+       npx tsx skills-agent-example.ts --wallet <PUBKEY> --bot-loop [--rounds N] [--timeout SECONDS]
 
 Examples:
   npx tsx skills-agent-example.ts "start a bot match"
@@ -344,7 +364,7 @@ Examples:
   npx tsx skills-agent-example.ts "get my practice stats"
   npx tsx skills-agent-example.ts "fetch the paid data"
   npx tsx skills-agent-example.ts --wallet GrtjuV...zuX --check
-  npx tsx skills-agent-example.ts --wallet GrtjuV...zuX --bot-loop --rounds 5 --delay 60
+  npx tsx skills-agent-example.ts --wallet GrtjuV...zuX --bot-loop --rounds 5 --timeout 300
 `)
         process.exit(1)
     }
