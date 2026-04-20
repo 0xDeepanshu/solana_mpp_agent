@@ -32,8 +32,11 @@ export async function getRedisClient(): Promise<RedisClientType> {
             socket: {
                 host,
                 port,
-                tls: true,          // Redis Cloud requires TLS on non-6379 ports
-                reconnectStrategy: (retries) => Math.min(retries * 50, 2000),
+                connectTimeout: 10000,  // 10s timeout to avoid infinite hang
+                reconnectStrategy: (retries) => {
+                    if (retries > 3) return new Error('Redis: max retries reached')
+                    return Math.min(retries * 200, 2000)
+                },
             },
         }) as RedisClientType
 
@@ -42,10 +45,13 @@ export async function getRedisClient(): Promise<RedisClientType> {
         await c.connect()
         console.log('[redis] Connected ✅')
 
-        client    = c
+        client     = c
         connecting = null
         return c
     })()
+
+    // If the promise rejects, clear `connecting` so next call retries
+    connecting.catch(() => { connecting = null })
 
     return connecting
 }

@@ -1,26 +1,29 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
 
 // Unity WebGL can run on any port, so we allow all origins.
-// Tighten this to specific domains if you need stricter security.
-const CORS_HEADERS = {
-    'Access-Control-Allow-Origin':  '*',
+const corsOptions = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Agent-Key',
     'Access-Control-Max-Age':       '86400',
 }
 
-export function middleware(request: NextRequest) {
+// Next.js 16: exported function must be named "proxy" (replaces "middleware")
+export default function proxy(request: NextRequest) {
     // ── Pre-flight OPTIONS request ────────────────────────────────────────────
     if (request.method === 'OPTIONS') {
-        return new NextResponse(null, {
-            status: 204,
-            headers: CORS_HEADERS,
+        return NextResponse.json({}, {
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                ...corsOptions,
+            },
         })
     }
 
     // ── Attach CORS headers to every API response ─────────────────────────────
     const response = NextResponse.next()
-    for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    response.headers.set('Access-Control-Allow-Origin', '*')
+    for (const [key, value] of Object.entries(corsOptions)) {
         response.headers.set(key, value)
     }
     return response
