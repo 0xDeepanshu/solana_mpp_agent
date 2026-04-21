@@ -40,6 +40,7 @@ interface GameResult extends MatchRecord {
     matches: number
     botUnlocked: boolean
     sessionExpiresAt?: number
+    averageScore?: number       // average of the 5 practice matches (only on unlock)
 }
 
 interface Waiter {
@@ -91,15 +92,35 @@ export async function POST(request: NextRequest) {
         const matches    = await redis.incr(`practice_matches:${wallet}`)
         const botUnlocked = matches >= MATCHES_REQUIRED
         let sessionExpiresAt: number | undefined
+        let averageScore: number | undefined
 
         if (botUnlocked) {
-            // ── 4. Create the 24-hour bot session and reset the counter ────────
+            // ── 4. Compute average score from the last 5 practice matches ──────
+            const allIds     = await redis.lRange(`player_matches:${wallet}`, 0, -1)
+            const last5Ids   = allIds.slice(-MATCHES_REQUIRED)
+            let totalScore   = 0
+            let validMatches = 0
+
+            for (const id of last5Ids) {
+                const rec = await redis.hGetAll(`match:${id}`)
+                if (rec?.score) {
+                    totalScore += parseFloat(rec.score)
+                    validMatches++
+                }
+            }
+
+            averageScore = validMatches > 0
+                ? parseFloat((totalScore / validMatches).toFixed(1))
+                : 0
+
+            // ── 5. Create the 24-hour bot session and reset the counter ────────
             await redis.set(`bot_session:${wallet}`, '1', { EX: SESSION_TTL })
             await redis.del(`practice_matches:${wallet}`)
             sessionExpiresAt = timestamp + SESSION_TTL * 1000
 
             console.log(
                 `[game/finished] 🔓 Bot session created for ${wallet.slice(0, 8)}… ` +
+                `averageScore: ${averageScore} | ` +
                 `Expires at ${new Date(sessionExpiresAt).toISOString()}`
             )
         }
@@ -118,6 +139,7 @@ export async function POST(request: NextRequest) {
             matches:    botUnlocked ? 0 : matches,
             botUnlocked,
             ...(sessionExpiresAt && { sessionExpiresAt }),
+            ...(averageScore !== undefined && { averageScore }),
         }
 
         // Wake up all waiting agents
