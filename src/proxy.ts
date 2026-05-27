@@ -8,7 +8,9 @@ const ALLOWED_ORIGINS = [
     'https://www.stackmon.fun',
     'http://localhost:3000',
     'http://localhost:3001',
-    'https://crasychasy.vercel.app'
+    'https://crasychasy.vercel.app',
+    'https://crashdsh.xyz',
+    'https://www.crashdsh.xyz'
 ]
 
 /** Check whether the given origin is permitted. */
